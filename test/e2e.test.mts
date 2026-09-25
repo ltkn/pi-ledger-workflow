@@ -42,9 +42,39 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   return { cmds, posts, answers, run, read, init };
 }
 
-test("registers the five commands", () => {
+test("registers the six commands", () => {
   const { cmds } = setup("happy", {}, []);
-  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:plan", "wf:review", "wf:scope", "wf:status"]);
+  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status"]);
+});
+
+test("/wf:help lists topics and shows one", async () => {
+  const t = setup("happy", {}, []);
+  await t.run("help");
+  assert.match(t.posts.at(-1)!, /\/wf:help stuck-task/);
+  await t.run("help", "stuck-task");
+  assert.match(t.posts.at(-1)!, /## A task keeps failing/);
+  await t.run("help", "nope");
+  assert.match(t.posts.at(-1)!, /No help topic "nope"/);
+});
+
+test("attempt limit: guidance resets the counter, plain /wf:build asks for an answer", async () => {
+  const t = setup("stuck", { verify: null, maxTaskAttempts: 2 }, [{ id: "T1", title: "a" }]);
+  await t.init();
+  const rounds = () => JSON.parse(t.read("state.json")).roundsTotal;
+
+  await t.run("build"); // 2 attempts, then the limit question; empty inline answer → pause
+  assert.match(t.posts.at(-1)!, /BUILD PAUSED/);
+  assert.match(t.posts.at(-1)!, /T1 used all 2 attempts/);
+  assert.equal(rounds(), 3);
+
+  await t.run("build", "try the other mapper"); // T1 gets 2 fresh attempts before asking again
+  assert.match(t.read("decisions.md"), /A: try the other mapper/);
+  assert.equal(rounds(), 6);
+
+  t.answers.push("split it"); // no args → prompted for the answer, then 2 more attempts
+  await t.run("build");
+  assert.match(t.read("decisions.md"), /A: split it/);
+  assert.equal(rounds(), 9);
 });
 
 test("happy path: question pause, answer, summarizer, completion, review follow-ups", async () => {
@@ -53,6 +83,7 @@ test("happy path: question pause, answer, summarizer, completion, review follow-
 
   await t.run("build"); // manager asks; empty inline answer → pause
   assert.match(t.posts.at(-1)!, /BUILD PAUSED/);
+  assert.match(t.posts.at(-1)!, /\*\*What now\*\*[\s\S]*\/wf:help decisions/); // situational help
   assert.equal(JSON.parse(t.read("state.json")).phase, "paused");
 
   await t.run("build", "yes"); // answer via args → recorded, loop completes

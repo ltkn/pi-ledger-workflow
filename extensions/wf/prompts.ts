@@ -2,6 +2,7 @@
  * Role prompts. Short and generic on purpose (paper: "zero-shot", no
  * task-specific demonstrations). The ledger carries the specifics.
  */
+import { tip } from "./help.ts";
 import { type Config, type Ledger, type Task, type State, cap, LEDGER_DIR } from "./ledger.ts";
 
 const L = LEDGER_DIR.replace(/\\/g, "/");
@@ -27,7 +28,9 @@ Do NOT modify source code in this phase. Investigate the codebase with your tool
    - your recommendation
    - open questions for the human: only those whose answer changes behaviour, API, or data model and cannot be settled from the code
 
-Then reply in chat, briefly: key findings, your recommendation, and the numbered open questions. End with: "Next: discuss, then /wf:plan".`;
+Then reply in chat, briefly: key findings, your recommendation, and the numbered open questions. End your reply with this block, verbatim:
+
+${tip("scope.done")}`;
 }
 
 export function planPrompt(guidance: string, hasTasks: boolean): string {
@@ -48,7 +51,9 @@ This is the PLAN phase. Read ${L}/objective.md, context.md, options.md and decis
    - every task must leave the project compiling and the test suite passing (the harness runs the tests after every task)
    - tests belong to the task that introduces the behaviour, not to a final "write tests" task
 ${hasTasks ? "   - tasks.json already exists: keep ids and status of done tasks; revise, add or drop the rest\n" : ""}
-Then summarise the plan in chat (approach + task list, one line each) and any question still open. End with: "Next: review the plan, then /wf:build".`;
+Then summarise the plan in chat (approach + task list, one line each) and any question still open. End your reply with this block, verbatim:
+
+${tip("plan.done")}`;
 }
 
 /* ================================ build loop ================================= */

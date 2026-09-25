@@ -6,6 +6,7 @@
  *   /wf:build [answer]    manager → worker → verify    (fresh contexts, automatic)
  *   /wf:review [focus]    independent review           (fresh context)
  *   /wf:status            where things stand
+ *   /wf:help [topic]      what to do next, and how to handle edge cases
  *
  * Based on the method of:
  *   V. Gao, V. Khosrowshahi, A. Khosrowshahi, X. Sun, J. Lee, E. Tran, S. (Sang Won) Lee.
@@ -43,6 +44,7 @@ import {
   workerBrief,
   workerSystem,
 } from "./prompts.ts";
+import { HELP_PATH, tip, topic, topics } from "./help.ts";
 import { extractJson, runFresh, stripFence } from "./runner.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
@@ -157,19 +159,32 @@ export default function wf(pi: ExtensionAPI) {
       let tasks = loaded.tasks;
       const cfg = led.config();
 
+      // A task paused on its attempt limit (and not since dropped/finished/reset by hand)
+      // needs an answer like any question, and the answer buys it a fresh set of attempts.
+      const exhausted =
+        st.pause?.from === "harness" && st.pause.task
+          ? tasks.find(
+              (t) => t.id === st.pause!.task && t.status !== "done" && t.status !== "dropped" && (t.attempts ?? 0) >= cfg.maxTaskAttempts,
+            )
+          : undefined;
+
       // Human input: answer to a pending question, or free guidance. Always persisted,
       // because fresh workers only ever see the ledger.
       const guidance = args.trim();
       if (guidance) {
         if (st.pause) led.recordDecision(`Q (${st.pause.from}${st.pause.task ? `, ${st.pause.task}` : ""}): ${st.pause.question}\nA: ${guidance}`);
         else led.recordDecision(`Guidance: ${guidance}`);
-      } else if (st.pause && st.pause.from !== "harness") {
+      } else if (st.pause && (st.pause.from !== "harness" || exhausted)) {
         const answer = ctx.hasUI ? await ctx.ui.input("Answer the pending wf question", st.pause.question.slice(0, 200)) : undefined;
         if (!answer?.trim()) {
           post(`**Build is waiting for a decision**\n\n${st.pause.question}\n\nAnswer with \`/${cmd("build")} <answer>\`, or discuss here first.`);
           return;
         }
         led.recordDecision(`Q (${st.pause.from}${st.pause.task ? `, ${st.pause.task}` : ""}): ${st.pause.question}\nA: ${answer.trim()}`);
+      }
+      if (exhausted) {
+        exhausted.attempts = 0;
+        led.saveTasks(tasks);
       }
       st.pause = undefined;
       st.phase = "building";
@@ -491,14 +506,9 @@ export default function wf(pi: ExtensionAPI) {
         aborted: "⏹ BUILD STOPPED — by you",
         error: "⚠ BUILD ERROR",
       };
-      const nextStep: Record<typeof outcome, string> = {
-        done: `Next: /${cmd("review")}`,
-        paused: `Answer with /${cmd("build")} <answer>, or discuss here first (then record the outcome with /${cmd("build")} <decision>).`,
-        budget: `Next: /${cmd("build")} to continue, /${cmd("status")}, or /${cmd("review")} to inspect.`,
-        stalled: `Give guidance with /${cmd("build")} <guidance>, or revise with /${cmd("plan")}.`,
-        aborted: `Resume with /${cmd("build")}.`,
-        error: `Check ${led.rel("log.md")}; resume with /${cmd("build")}.`,
-      };
+      const tipKey =
+        outcome === "paused" ? (st.pause?.from === "harness" && st.pause.task ? "paused-attempts" : "paused-question") : outcome;
+      const whatNow = tip(`build.${tipKey}`, { task: st.pause?.task ?? "", max: cfg.maxTaskAttempts, rounds: cfg.maxRounds });
       post(
         [
           `**${headline[outcome]}**${outcomeNote ? ` — ${outcomeNote}` : ""}`,
@@ -510,9 +520,9 @@ export default function wf(pi: ExtensionAPI) {
           assumptionsThisRun.length ? `\nAssumptions made (review these):\n${assumptionsThisRun.map((a) => `- ${a}`).join("\n")}` : "",
           st.pause && outcome !== "stalled" ? `\nOpen question: ${st.pause.question}` : "",
           `\nThis run: $${runCost.total.toFixed(3)} · feature total: ${st.roundsTotal} rounds, $${st.costTotal.toFixed(3)}`,
-          nextStep[outcome],
+          `\n${whatNow}`,
           "",
-          `(Note for the assistant: build workers only read ${led.rel("")}. If the user decides something while discussing this, write it to ${led.rel("decisions.md")}.)`,
+          `(Note for the assistant: build workers only read ${led.rel("")}. If the user decides something while discussing this, write it to ${led.rel("decisions.md")}. For how to handle this situation, see ${HELP_PATH}.)`,
         ]
           .filter((l) => l !== "")
           .join("\n"),
@@ -589,10 +599,10 @@ export default function wf(pi: ExtensionAPI) {
             prose,
             "",
             added.length
-              ? `**Added ${added.map((t) => t.id).join(", ")} to the task ledger.** Next: /${cmd("build")} to address them, or discuss / /${cmd("plan")} to revise.`
+              ? `**Added ${added.map((t) => t.id).join(", ")} to the task ledger.**\n\n${tip("review.followups", { tasks: added.map((t) => t.id).join(", ") })}`
               : verdict?.verdict === "pass"
-                ? "**REVIEW PASS.** Next: commit / open a PR as appropriate."
-                : `Next: discuss the findings, then /${cmd("plan")} or /${cmd("build")} <guidance>.`,
+                ? `**REVIEW PASS.**\n\n${tip("review.pass")}`
+                : tip("review.other"),
           ].join("\n"),
         );
       } finally {
@@ -627,9 +637,31 @@ export default function wf(pi: ExtensionAPI) {
         ...(loaded.ok ? loaded.tasks.map(taskLine) : [`tasks: ${loaded.error}`]),
         ...(st.pause ? [`pending: ${st.pause.question.split("\n")[0]}`] : []),
         `next: ${phaseNext[st.phase]}`,
-        `ledger: ${led.rel("")}`,
+        `ledger: ${led.rel("")} · help: /${cmd("help")}`,
       ];
       ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /* --------------------------------- help -------------------------------- */
+
+  pi.registerCommand(cmd("help"), {
+    description: "What to do next and how to handle edge cases. /wf:help <topic> shows one section",
+    handler: async (args, ctx) => {
+      const name = args.trim().toLowerCase();
+      const body = name ? topic(name) : undefined;
+      if (body) return post(`${body}\n\n(Full guide: ${HELP_PATH})`);
+      const list = topics().map((t) => `- \`/${cmd("help")} ${t.name}\` — ${t.title}`);
+      if (!list.length) return ctx.ui.notify(`Help file not found: ${HELP_PATH}`, "warning");
+      post(
+        [
+          name ? `No help topic "${name}".` : "**wf help** — pick a topic:",
+          "",
+          ...list,
+          "",
+          `Full guide: ${HELP_PATH}`,
+        ].join("\n"),
+      );
     },
   });
 }

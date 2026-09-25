@@ -23,7 +23,11 @@ if (sys.includes("MANAGER")) {
     say("ok\n```wf-manage\n" + JSON.stringify({ tasks, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
   }
 } else if (sys.includes("WORKER")) {
-  if (scenario === "failing") {
+  if (scenario === "stuck") {
+    // Makes progress on disk every round but never finishes: exhausts the attempt limit.
+    fs.appendFileSync("stuck.txt", "x");
+    say("```wf-report\n" + JSON.stringify({ status: "partial", summary: "still going", notes: "n" }) + "\n```");
+  } else if (scenario === "failing") {
     fs.writeFileSync("same.txt", "x");
     say("```wf-report\n" + JSON.stringify({ status: "done", summary: "tried", notes: "n" }) + "\n```");
   } else {

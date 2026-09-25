@@ -15,11 +15,18 @@ see [Credits](#credits).
 /wf:build [answer]    manager → worker → verify, repeated   fresh contexts · automatic
 /wf:review [focus]    independent review of the diff        fresh context
 /wf:status            where things stand
+/wf:help [topic]      what to do next, and how to handle edge cases
 ```
 
 `wf` = workflow. The `name:verb` form mirrors Pi's own `/skill:name`, can't
 collide with built-ins or other extensions' `/plan`, and typing `/wf` lists
-all five commands.
+all six commands.
+
+**Day-to-day guide:** [`workflow-help.md`](extensions/wf/workflow-help.md)
+covers the normal path and what to do when a task keeps failing, the build
+stalls, the plan turns out wrong, or review leaves minor findings. You rarely
+need to open it: after every phase Pi shows a short **What now** block for
+the result you got, and `/wf:help <topic>` posts any section into the session.
 
 ## Install
 
