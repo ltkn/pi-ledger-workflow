@@ -3,14 +3,26 @@
 import * as fs from "node:fs";
 const argv = process.argv.slice(2);
 const sys = fs.readFileSync(argv[argv.indexOf("--append-system-prompt") + 1], "utf8");
-const brief = fs.readFileSync(argv.find((a) => a.startsWith("@")).slice(1), "utf8");
+const attached = argv.find((a) => a.startsWith("@"));
+const brief = attached ? fs.readFileSync(attached.slice(1), "utf8") : "";
+const message = argv.at(-1);
+// Sessions: the first run "persists" its brief; a resume (no attachment) finds it again.
+const sid = argv.indexOf("--session-id");
+const sessionFile = sid >= 0 ? `${argv[argv.indexOf("--session-dir") + 1]}/${argv[sid + 1]}.mock` : undefined;
+if (sessionFile && brief) fs.writeFileSync(sessionFile, brief);
 const scenario = process.env.MOCK_SCENARIO;
 const say = (text) =>
   console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", usage: { input: 1200, output: 150, cacheRead: 800, cacheWrite: 0, cost: { total: 0.001 } },
     content: [{ type: "toolCall", name: "read", arguments: { path: "x" } }, { type: "text", text }] } }));
 const tasksIn = () => JSON.parse(brief.match(/## tasks.json\n\n([\s\S]*?)\n## /)[1]).tasks;
 
-if (sys.includes("MANAGER")) {
+if (message.startsWith("You stopped before")) {
+  // A resumed worker answers from its session, read-only.
+  const readOnly = argv[argv.indexOf("--tools") + 1] === "read,grep,find,ls";
+  if (!process.env.MOCK_NO_RESUME && readOnly && sessionFile && fs.existsSync(sessionFile)) {
+    say("```wf-notes\nnotes from the resumed session\n```\n```wf-report\n" + JSON.stringify({ status: "partial", summary: "resumed with full context" }) + "\n```");
+  } else say("still no report");
+} else if (sys.includes("MANAGER")) {
   if (process.env.MOCK_BRIEF_OUT) fs.appendFileSync(process.env.MOCK_BRIEF_OUT, brief + "\n=====\n");
   if (scenario === "failing") {
     // Always claims everything is done: the harness must veto this.

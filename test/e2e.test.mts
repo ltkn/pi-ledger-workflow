@@ -92,7 +92,7 @@ test("happy path: question pause, answer, summarizer, completion, review follow-
   await t.run("build", "yes"); // answer via args → recorded, loop completes
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
   assert.match(t.read("decisions.md"), /Use soft delete\?\n\s+A: yes/);
-  assert.match(t.read("log.md"), /partial — salvaged/); // cut-off summarizer used; its "done" downgraded
+  assert.match(t.read("log.md"), /partial — resumed with full context/); // the worker's own session wrote the missing report
   assert.match(t.read("log.md"), /did T1\nsecond line/); // raw newline inside a JSON string repaired
   const built = JSON.parse(t.read("tasks.json")).tasks;
   assert.deepEqual(built.map((x: any) => x.id), ["T1", "T2", "T3"]); // delta merge keeps order
@@ -259,7 +259,8 @@ test("/wf:stats: feature card with reliability and tokens per role; all features
   if (process.env.SHOW_STATS) console.log(card);
   assert.match(card, /Tasks +3 done of 4 · planned 3 · review \+1/);
   assert.match(card, /Rounds +4 worker rounds · 1\.3 per done task · first try 2\/3 \(67%\) · most: T2 \(2\)/);
-  assert.match(card, /reports 3 ok, 1 salvaged, 0 lost · manager decisions missing 0\/\d+/);
+  assert.match(card, /reports 3 ok, 1 resumed, 0 salvaged, 0 lost · manager decisions missing 0\/\d+/);
+  assert.match(card, /\nresume +1 /);
   assert.match(card, /Review +changes_needed \(1 R-tasks\)/);
   assert.match(card, /\nworker +4 +2\.0k +2\.0k +8\.0k +600 +40%/); // 4 calls · peak 2.0k · prompt 4×2000 · output 4×150 · 800/2000 cached
   assert.match(card, /\ntotal /);
@@ -270,5 +271,18 @@ test("/wf:stats: feature card with reliability and tokens per role; all features
   if (process.env.SHOW_STATS) console.log(all);
   assert.match(all, /── worker: p\/m · manager: p\/m · 1 feature\(s\)/);
   assert.doesNotMatch(all, /older feature/); // the new, empty feature isn't "built before stats"
-  assert.match(all, /Add order cancellation +3\/4 +1\.3 +67% +1 +0 +changes \+1R/);
+  assert.match(all, /Add order cancellation +3\/4 +1\.3 +67% +1 +0 +0 +changes \+1R/);
+});
+
+test("missing report: resume fails → summarizer fallback; sessions are always deleted", async () => {
+  const sessions = () => fs.readdirSync(os.tmpdir()).filter((d) => d.startsWith("pi-wf-session-")).sort();
+  const before = sessions();
+  const t = setup("happy", { verify: null }, [{ id: "T1", title: "domain" }, { id: "T2", title: "endpoint" }, { id: "T3", title: "tests" }]);
+  await t.init();
+  process.env.MOCK_NO_RESUME = "1";
+  await t.run("build");
+  delete process.env.MOCK_NO_RESUME;
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  assert.match(t.read("log.md"), /partial — salvaged/); // summarizer used; its "done" downgraded
+  assert.deepEqual(sessions(), before);
 });

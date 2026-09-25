@@ -19,6 +19,7 @@
  * ("Credits" and "What's taken from the paper").
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type Flag, changedPaths, diffSummary, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
@@ -27,6 +28,7 @@ import {
   type Config,
   type Ledger as LedgerT,
   type Pause,
+  type RoundEvent,
   type State,
   type Task,
   type WorkerReport,
@@ -40,6 +42,7 @@ import {
   now,
 } from "./ledger.ts";
 import {
+  RESUME_PROMPT,
   REVIEWER_SYSTEM,
   SUMMARIZER_SYSTEM,
   TESTER_SYSTEM,
@@ -362,6 +365,12 @@ export default function wf(pi: ExtensionAPI) {
         tasks = merged;
       };
 
+      // Each worker runs in a throwaway session so it can be resumed for its report; always deleted.
+      let sessionDir: string | undefined;
+      const dropSession = () => {
+        if (sessionDir) fs.rmSync(sessionDir, { recursive: true, force: true });
+        sessionDir = undefined;
+      };
       busy = true;
       try {
         for (let round = 1; round <= cfg.maxRounds; round++) {
@@ -478,9 +487,12 @@ export default function wf(pi: ExtensionAPI) {
           }
           activity = "";
           render(round, `worker ${next.id}`);
+          sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-wf-session-"));
+          const session = { dir: sessionDir, id: `wf-r${n}-${next.id}` };
           const wres = await runFresh({
             cwd: ctx.cwd,
             role: "worker",
+            session,
             systemPrompt: workerSystem(cfg),
             brief: workerBrief(led, cfg, st, next, dec?.instruction ?? "", verifyCmd, liveSpec),
             prompt: `Carry out the brief in the attached file: do only task ${next.id}. End with the wf-notes and wf-report blocks.`,
@@ -496,16 +508,47 @@ export default function wf(pi: ExtensionAPI) {
           });
           addCost(wres.cost);
           if (wres.aborted) {
+            dropSession();
             outcome = "aborted";
             break;
           }
 
           recordCall(led, "worker", wres, roleModel(ctx, cfg, "worker"), roleThinking(ctx, cfg, "worker"), { round: n, task: next.id });
-          let reportSource: "ok" | "salvaged" | "lost" = "ok";
+          let reportSource: RoundEvent["report"] = "ok";
           let report = extractJson<WorkerReport>(wres.text, "wf-report");
           let notes = extractBlock(wres.text, "wf-notes") ?? report?.notes;
           if (!report) {
-            // Cut-off summarizer: salvage the attempt so its ideas reach the manager.
+            // Resume the worker's own session: it writes the report from its full context
+            // (every tool result it saw), read-only so it can't change anything more.
+            render(round, `asking ${next.id} for its report`);
+            const rres = await runFresh({
+              cwd: ctx.cwd,
+              role: "worker",
+              session,
+              systemPrompt: workerSystem(cfg),
+              prompt: RESUME_PROMPT,
+              tools: READ_ONLY,
+              model: roleModel(ctx, cfg, "worker"),
+              thinking: roleThinking(ctx, cfg, "worker"),
+              childExtensions: cfg.childExtensions,
+              signal: abort.signal,
+            });
+            addCost(rres.cost);
+            recordCall(led, "resume", rres, roleModel(ctx, cfg, "worker"), roleThinking(ctx, cfg, "worker"), { round: n, task: next.id });
+            const resumed = rres.aborted ? undefined : extractJson<WorkerReport>(rres.text, "wf-report");
+            if (resumed) {
+              report = resumed;
+              reportSource = "resumed";
+              notes = extractBlock(rres.text, "wf-notes") ?? resumed.notes ?? notes;
+            }
+          }
+          dropSession();
+          if (abort.signal.aborted) {
+            outcome = "aborted";
+            break;
+          }
+          if (!report) {
+            // Fallback: a fresh summarizer salvages the attempt from its transcript so its ideas reach the manager.
             render(round, `summarising ${next.id}`);
             const sres = await runFresh({
               cwd: ctx.cwd,
@@ -663,6 +706,7 @@ export default function wf(pi: ExtensionAPI) {
         outcome = "error";
         outcomeNote = (e as Error).message;
       } finally {
+        dropSession();
         busy = false;
         unsubEsc?.();
         ctx.ui.setWidget("wf", undefined);

@@ -172,7 +172,7 @@ themselves; the full verify is the gate.
 | Worker: do one task, rewrite notes as a curated whole | build worker; harness writes its `notes` field, capped |
 | Verifier on public tests, verdict is ground truth, a fail vetoes "done" | your test command after every changed round; failing tests block completion and spawn a fix task |
 | Manager can't finish on an empty workspace | "done" requires changes vs. the base commit, no open tasks, and a fresh passing verify |
-| Guards: round budget, no-progress, cut-off summarizer, capped plan/notes | `maxRounds`; reissue-after-no-change stops; reportless/cut-off workers are summarised by a fresh call; caps |
+| Guards: round budget, no-progress, cut-off summarizer, capped plan/notes | `maxRounds`; reissue-after-no-change stops; a reportless/cut-off worker is first resumed in its own session and asked for the report (read-only), then summarised by a fresh call if that fails; caps |
 | Finalizer | harness-written handoff message (no model call — the code is already on disk) |
 | §4 proposal: fresh-perspective workers against anchoring | `/wf:review` deliberately gets objective/plan/decisions/diff but **not** worker notes |
 
@@ -210,8 +210,10 @@ Settings that matter for a local model:
   main session (scope/plan) and review, the local model for manager/worker
   rounds. The paper used one model for every role, so this goes beyond its
   evidence.
-- Workers that forget the report block are salvaged by the summarizer — watch
-  `log.md` for "salvaged" to see how often that happens.
+- Workers that end without their report are resumed in their own session and
+  asked for it (with their full context, read-only); only if that fails does a
+  fresh summarizer salvage the attempt. `/wf:stats` shows how often each
+  happens ("resumed", "salvaged").
 
 ## Cost
 

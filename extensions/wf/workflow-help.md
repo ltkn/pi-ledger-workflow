@@ -363,8 +363,11 @@ a question. Pair it with a larger `maxRounds` for long runs.
 
 - **Tasks and rounds**: how many rounds each finished task took, how many were
   done on the first try, and which task took the most.
-- **Reliability**: worker reports that had to be salvaged (or were lost), and
-  manager rounds that produced no usable decision. With a smaller model, these
+- **Reliability**: worker reports that were missing. A worker that ends
+  without its report is first **resumed** in its own session and asked for it
+  (from its full context, without being able to change anything); only if that
+  fails is it **salvaged** by a fresh summarizer, or **lost**. Also manager
+  rounds that produced no usable decision. With a smaller model, these
   are the first numbers to watch.
 - **Tests, flags and you**: rounds with failing tests, vetoed finishes, lost
   work, changed tests, undos, questions and stops.

@@ -248,6 +248,9 @@ export function workerBrief(led: Ledger, cfg: Config, st: State, task: Task, ins
   ].join("\n");
 }
 
+/** Sent to a worker's own session when it ended without its report: it answers from its full context. */
+export const RESUME_PROMPT = `You stopped before writing your report. Do not continue the task and do not change any files. From what you did and saw above, end now with the wf-notes block and then the wf-report block, exactly as your instructions describe. If the task is not finished, use status "partial" and say in the notes what remains.`;
+
 export const SUMMARIZER_SYSTEM = `You summarise a worker attempt that was cut off or ended without its report. You have no tools. The transcript shows the worker's messages and the names of its tool calls, NOT their results: do not claim that tests passed or that the task is complete. The status is always "partial"; the next round confirms completion.
 
 Output only these two blocks. First the FULL replacement for notes.md, as plain markdown (no code fences inside): the current notes, updated with what the transcript establishes — files touched, the approach, what failed, where it stopped, what remains.

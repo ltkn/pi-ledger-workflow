@@ -100,8 +100,8 @@ export interface RoundEvent {
   task: string;
   attempt: number;
   status: string;
-  /** "salvaged": the summarizer rebuilt the report; "lost": not even that */
-  report: "ok" | "salvaged" | "lost";
+  /** "resumed": the worker's own session wrote it when asked; "salvaged": the summarizer rebuilt it; "lost": neither */
+  report: "ok" | "resumed" | "salvaged" | "lost";
   verify: boolean | null;
   changed: boolean;
   files?: number;

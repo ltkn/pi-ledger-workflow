@@ -103,7 +103,7 @@ export interface Summary {
   perDoneTask: number;
   firstTry: [number, number];
   most?: [string, number];
-  reports: { ok: number; salvaged: number; lost: number };
+  reports: { ok: number; resumed: number; salvaged: number; lost: number };
   managerMissing: [number, number];
   failingRounds: number;
   vetoes: number;
@@ -132,7 +132,7 @@ export function summarize(f: FeatureData): Summary {
   const newRole = (): RoleStats => ({ calls: 0, prompt: 0, output: 0, cached: 0, peak: 0, peakSum: 0, cost: 0, ms: 0, model: "" });
   const roles = new Map<string, RoleStats>();
   const total = newRole();
-  for (const role of ["tester", "manager", "worker", "summarizer", "reviewer"]) {
+  for (const role of ["tester", "manager", "worker", "resume", "summarizer", "reviewer"]) {
     const cs = calls.filter((c) => c.role === role);
     if (!cs.length) continue;
     const r = newRole();
@@ -183,6 +183,7 @@ export function summarize(f: FeatureData): Summary {
     most,
     reports: {
       ok: rounds.filter((r) => r.report === "ok").length,
+      resumed: rounds.filter((r) => r.report === "resumed").length,
       salvaged: rounds.filter((r) => r.report === "salvaged").length,
       lost: rounds.filter((r) => r.report === "lost").length,
     },
@@ -214,7 +215,7 @@ export function renderCard(f: FeatureData): string {
     "",
     `Tasks        ${t.done} done of ${t.total - t.dropped} · ${origin}`,
     `Rounds       ${s.rounds} worker rounds · ${s.perDoneTask.toFixed(1)} per done task · first try ${s.firstTry[0]}/${s.firstTry[1]} (${pct(...s.firstTry)})${s.most ? ` · most: ${s.most[0]} (${s.most[1]})` : ""}`,
-    `Reliability  reports ${s.reports.ok} ok, ${s.reports.salvaged} salvaged, ${s.reports.lost} lost · manager decisions missing ${s.managerMissing[0]}/${s.managerMissing[1]}`,
+    `Reliability  reports ${s.reports.ok} ok, ${s.reports.resumed} resumed, ${s.reports.salvaged} salvaged, ${s.reports.lost} lost · manager decisions missing ${s.managerMissing[0]}/${s.managerMissing[1]}`,
     `Tests        failed after ${s.failingRounds} of ${s.rounds} rounds · finish vetoed ${s.vetoes}× · spec tests: ${s.spec}`,
     `Flags        lost work ${s.flags.lostWork} · tampering ${s.flags.tampering} · spec edits restored ${s.flags.specEdits} · undo ${s.undo.count}${s.undo.count ? ` (${s.undo.rounds} rounds)` : ""}`,
     `You          questions ${s.questions.total} (${s.questions.inline} answered inline)${stops ? ` · stops: ${stops}` : ""}`,
@@ -239,7 +240,7 @@ export function renderAll(features: FeatureData[], skipped: number): string {
   const groups = new Map<string, typeof rows>();
   for (const x of rows) groups.set(workerModel(x), [...(groups.get(workerModel(x)) ?? []), x]);
 
-  const header = `${pad("feature", 28)}${lpad("tasks", 7)}${lpad("rnd/task", 9)}${lpad("1st try", 8)}${lpad("salv", 5)}${lpad("flags", 6)}  ${pad("review", 16)}${lpad("peak w", 8)}${lpad("tokens", 8)}${lpad("cost", 8)}${lpad("time", 9)}`;
+  const header = `${pad("feature", 28)}${lpad("tasks", 7)}${lpad("rnd/task", 9)}${lpad("1st try", 8)}${lpad("res", 4)}${lpad("salv", 5)}${lpad("flags", 6)}  ${pad("review", 16)}${lpad("peak w", 8)}${lpad("tokens", 8)}${lpad("cost", 8)}${lpad("time", 9)}`;
   const lines = [header];
   for (const [model, xs] of groups) {
     const mgr = mostCommon(xs.map((x) => x.s.roles.get("manager")?.model));
@@ -247,14 +248,14 @@ export function renderAll(features: FeatureData[], skipped: number): string {
     for (const { f, s } of xs) {
       const flags = s.flags.lostWork + s.flags.tampering;
       lines.push(
-        `${pad(f.feature, 28)}${lpad(`${s.tasks.done}/${s.tasks.total - s.tasks.dropped}`, 7)}${lpad(s.perDoneTask.toFixed(1), 9)}${lpad(pct(...s.firstTry), 8)}${lpad(String(s.reports.salvaged + s.reports.lost), 5)}${lpad(String(flags), 6)}  ${pad(s.reviews.at(-1)?.replace("changes_needed", "changes").replace(/ \((\d+) R-tasks\)/, " +$1R") ?? "–", 16)}${lpad(human(s.roles.get("worker")?.peak ?? 0), 8)}${lpad(human(s.total.prompt + s.total.output), 8)}${lpad(`$${s.total.cost.toFixed(2)}`, 8)}${lpad(dur(s.total.ms), 9)}`,
+        `${pad(f.feature, 28)}${lpad(`${s.tasks.done}/${s.tasks.total - s.tasks.dropped}`, 7)}${lpad(s.perDoneTask.toFixed(1), 9)}${lpad(pct(...s.firstTry), 8)}${lpad(String(s.reports.resumed), 4)}${lpad(String(s.reports.salvaged + s.reports.lost), 5)}${lpad(String(flags), 6)}  ${pad(s.reviews.at(-1)?.replace("changes_needed", "changes").replace(/ \((\d+) R-tasks\)/, " +$1R") ?? "–", 16)}${lpad(human(s.roles.get("worker")?.peak ?? 0), 8)}${lpad(human(s.total.prompt + s.total.output), 8)}${lpad(`$${s.total.cost.toFixed(2)}`, 8)}${lpad(dur(s.total.ms), 9)}`,
       );
     }
     if (xs.length > 1) {
       const avg = (g: (x: (typeof xs)[number]) => number) => xs.reduce((a, x) => a + g(x), 0) / xs.length;
       const first = xs.reduce((a, x) => [a[0] + x.s.firstTry[0], a[1] + x.s.firstTry[1]], [0, 0]);
       lines.push(
-        `${pad("  average", 28)}${lpad("", 7)}${lpad(avg((x) => x.s.perDoneTask).toFixed(1), 9)}${lpad(pct(first[0], first[1]), 8)}${lpad(avg((x) => x.s.reports.salvaged + x.s.reports.lost).toFixed(1), 5)}${lpad(avg((x) => x.s.flags.lostWork + x.s.flags.tampering).toFixed(1), 6)}  ${pad("", 16)}${lpad(human(Math.round(avg((x) => x.s.roles.get("worker")?.peak ?? 0))), 8)}${lpad(human(Math.round(avg((x) => x.s.total.prompt + x.s.total.output))), 8)}${lpad(`$${avg((x) => x.s.total.cost).toFixed(2)}`, 8)}${lpad(dur(avg((x) => x.s.total.ms)), 9)}`,
+        `${pad("  average", 28)}${lpad("", 7)}${lpad(avg((x) => x.s.perDoneTask).toFixed(1), 9)}${lpad(pct(first[0], first[1]), 8)}${lpad(avg((x) => x.s.reports.resumed).toFixed(1), 4)}${lpad(avg((x) => x.s.reports.salvaged + x.s.reports.lost).toFixed(1), 5)}${lpad(avg((x) => x.s.flags.lostWork + x.s.flags.tampering).toFixed(1), 6)}  ${pad("", 16)}${lpad(human(Math.round(avg((x) => x.s.roles.get("worker")?.peak ?? 0))), 8)}${lpad(human(Math.round(avg((x) => x.s.total.prompt + x.s.total.output))), 8)}${lpad(`$${avg((x) => x.s.total.cost).toFixed(2)}`, 8)}${lpad(dur(avg((x) => x.s.total.ms)), 9)}`,
       );
     }
   }

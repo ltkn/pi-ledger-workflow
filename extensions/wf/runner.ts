@@ -12,7 +12,10 @@ export interface RunOptions {
   cwd: string;
   role: string;
   systemPrompt: string;
-  brief: string;
+  /** attached as a file; omitted when resuming a session, whose history already holds it */
+  brief?: string;
+  /** persist the conversation so it can be resumed (default: in-memory, gone when the process ends) */
+  session?: { dir: string; id: string };
   /** The user message sent with the attached brief; says what to do and which block to end with. */
   prompt?: string;
   /** null = no tools at all */
@@ -65,15 +68,15 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
   const sysFile = path.join(tmp, "system.md");
   const briefFile = path.join(tmp, "brief.md");
   await fs.promises.writeFile(sysFile, o.systemPrompt, { mode: 0o600 });
-  await fs.promises.writeFile(briefFile, o.brief, { mode: 0o600 });
+  if (o.brief !== undefined) await fs.promises.writeFile(briefFile, o.brief, { mode: 0o600 });
 
-  const args = ["--mode", "json", "-p", "--no-session"];
+  const args = ["--mode", "json", "-p", ...(o.session ? ["--session-dir", o.session.dir, "--session-id", o.session.id] : ["--no-session"])];
   if (!o.childExtensions) args.push("--no-extensions");
   if (o.model) args.push("--model", o.model);
   if (o.thinking) args.push("--thinking", o.thinking);
   if (o.tools === null) args.push("--no-tools");
   else args.push("--tools", o.tools.join(","));
-  args.push("--append-system-prompt", sysFile, `@${briefFile}`, o.prompt ?? "Carry out the brief in the attached file.");
+  args.push("--append-system-prompt", sysFile, ...(o.brief !== undefined ? [`@${briefFile}`] : []), o.prompt ?? "Carry out the brief in the attached file.");
 
   const started = Date.now();
   const res: RunResult = {
