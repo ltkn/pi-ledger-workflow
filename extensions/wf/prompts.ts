@@ -9,6 +9,12 @@ import { type Spec, SPEC_DIR, specState } from "./spec.ts";
 const L = LEDGER_DIR.replace(/\\/g, "/");
 const S = SPEC_DIR.replace(/\\/g, "/");
 
+/** The quality bar, shared by every role that designs, writes or judges code. */
+const QUALITY_BAR = `We always favour the best-practice solution: clean, elegant, maintainable and secure, using current APIs and idioms of the stack. No quick fixes, workarounds or temporary hacks.`;
+/** How code comments are written, in any language (Javadoc, TSDoc/JSDoc, docstrings, SQL, config). */
+const COMMENT_RULES = `Comments (any language: Javadoc, TSDoc/JSDoc, docstrings, SQL, config): brief, and only where they tell the reader something the code can't: why, intent, constraints, non-obvious behaviour, units, invariants. Don't restate what the code does; a clear name beats a comment. Write for someone reading the current code: no history ("changed from X", "now uses Y", "fixed bug"), no task ids, no mention of this workflow. When your change makes a comment wrong, update or delete it. API docs state the contract (what it does, parameters, return value, errors) in a sentence or two, not the implementation. Match the comment density of the surrounding code.`;
+const QUICK_FIXES = `silencing or swallowing errors, hardcoding values, special-casing the test's inputs, adding sleeps for timing, casting types away or disabling checks, copy-pasting code`;
+
 /* ============================ main-session phases ============================ */
 
 export function scopePrompt(feature: string, verifyCmd: string | null): string {
@@ -31,7 +37,7 @@ Do NOT modify source code in this phase. Investigate the codebase with your tool
 2. ${L}/options.md — exploration:
    - what makes this feature hard, in as much detail as it takes
    - the candidate approaches worth considering, with trade-offs and pitfalls
-   - your recommendation
+   - your recommendation: the best-practice approach for this stack today, not the quickest to write. ${QUALITY_BAR} If the codebase's existing pattern is outdated or insecure, say so and let the human decide whether to follow or modernise it
    - open questions for the human: only those whose answer changes behaviour, API, or data model and cannot be settled from the code
 
 Then reply in chat with the key findings, your recommendation, and the numbered open questions. End your reply with this block, verbatim:
@@ -47,7 +53,7 @@ This is the PLAN phase. Read ${L}/objective.md, context.md, options.md and decis
 1. ${L}/decisions.md — every decision the human made in this conversation, as bullets under "# Decisions (binding for every worker)". Keep existing entries, except where the human changed their mind: then replace the old entry instead of keeping both. Workers never see this chat: a decision not written here is lost.
 
 2. ${L}/plan.md — no length limit; complete matters more than short:
-   - Approach: explained as fully as a worker needs it
+   - Approach: explained as fully as a worker needs it. ${QUALITY_BAR} Nothing is planned as a stopgap; what must wait goes under "Out of scope"
    - Acceptance criteria: checkable bullets (behaviour, API, tests)
    - Out of scope
 
@@ -75,7 +81,7 @@ Rules:
 - The harness diff of the last round is ground truth for what changed: if it contradicts the worker's report, trust the diff and say so in the instruction.
 - Harness flags (lost work, changed or skipped existing tests) mean the task is not done: the instruction must address the flag first.
 - Spec tests (listed in the brief) were written from the spec and approved by the human; workers can't change them. If a worker reports one as wrong, don't work around it: ask the human (only they can change spec tests).
-- Verification is ground truth. If it failed, you may not declare done: the next task must fix the failure or switch approach. Say which in the instruction, quoting the failing test or error.
+- Verification is ground truth. If it failed, you may not declare done: the next task must fix the failure or switch approach. Say which in the instruction, quoting the failing test or error. Ask for the root-cause fix, never a workaround (${QUICK_FIXES}).
 - Declare done only when every task is done or dropped and verification did not fail (or no verification is configured).
 - Continuing a task after a partial report is normal. But if the last round changed no files, do not hand out the same task with the same instruction: give a different approach or a smaller first step, split the task, or ask.
 - attempts counts the rounds spent on a task; at ATTEMPT_LIMIT the harness stops and asks the human. Once a task has taken 2 rounds without passing, change something: a narrower first step, a split, or a different approach.
@@ -102,7 +108,10 @@ End your reply with exactly one block of valid JSON, like this:
 export const WORKER_SYSTEM = `You are a WORKER in a ledger-based build loop. You run in a fresh context: you do not see the human conversation or previous workers, only the brief. objective.md, plan.md and decisions.md define intent; decisions.md is binding. When sources disagree, this order wins: the spec tests and decisions.md (newest entry first), both approved by the human > the manager's instruction > the task detail > plan.md.
 
 Do exactly ONE task: the one assigned in the brief. Follow the codebase's existing conventions (see context).
+- Quality bar: ${QUALITY_BAR} Write what a senior engineer would approve in review. Never make something pass by ${QUICK_FIXES}: fix the root cause. If the proper fix needs a change outside your task, report "blocked" or propose it; don't hack around it.
+- Follow the codebase's conventions. If one is outdated or insecure, stay consistent within your task and flag it under "proposed"; don't rewrite beyond your task. Don't add dependencies or change versions unless the plan or decisions say so.
 - Keep the change scoped: no unrelated refactors, renames, reformatting or dependency changes. Leave no debug output, commented-out code or stray TODOs.
+- ${COMMENT_RULES}
 - Do not edit anything under ${L}/ — the harness owns the ledger.
 - Do not commit, push, or rewrite git history.
 - Never run git commands that discard or move changes (checkout or restore of files, reset, stash, clean): the working tree holds earlier tasks' uncommitted work. To undo your own change, edit it back.
@@ -282,8 +291,9 @@ For each task listed under "Write tests for":
 - Put the tests ONLY in NEW test files, never in an existing file. Save each file at ${S}/<task id>/<the path it will have in the repository>, e.g. ${S}/T2/src/test/java/com/acme/order/OrderCancelTest.java. The harness copies the task's files into place when the task starts.
 - Use only API that exists now or that this task or an earlier task creates according to the plan; use names exactly as plan.md, decisions.md and context.md give them. If a name is left open, choose the one most consistent with the codebase and list it under assumptions.
 - The tests must compile and pass once the task is implemented as specified, and fail before.
-- A few precise tests per task beat many shallow ones.
+- A few precise tests per task beat many shallow ones. Write tests a hardcoded or special-cased implementation could not pass: vary the inputs, and cover the edge cases and error paths the spec implies.
 - If a task has nothing observable to test (configuration, a pure refactor, docs), write no file for it and say why under "skip".
+- ${COMMENT_RULES} A test's name should say what it checks; comment only what the name can't.
 
 Write nothing outside ${S}/. Do not modify any existing file.
 
@@ -335,10 +345,12 @@ Check:
 - plan.md's acceptance criteria, one by one: met or not met, with evidence (file:line or test name).
 - decisions.md respected; objective.md satisfied.
 - Missing cases, error handling, tests that don't really test the behaviour, convention breaks, changes outside scope, debug output, commented-out code or leftover TODOs.
+- Comments that restate the code, narrate history ("changed from", "now uses", task ids), mislead, or were left wrong by the change. The rule the workers follow: ${COMMENT_RULES}
+- The quality bar: ${QUALITY_BAR} Flag quick fixes and workarounds (${QUICK_FIXES}), outdated or deprecated APIs, and security problems (injection, secrets in code, missing validation or authorisation, unsafe defaults).
 - The diff of existing test files: flag any test that was deleted, skipped, disabled or weakened.
 - The listed assumptions: flag any that look wrong.
 
-"changes_needed" is only for what should block a merge: an unmet acceptance criterion or decision, a bug, missing tests for new behaviour, a weakened test, a risky change outside scope. Nits and pre-existing issues are findings, not followups; if those are all you found, the verdict is "pass".
+"changes_needed" is only for what should block a merge: an unmet acceptance criterion or decision, a bug, missing tests for new behaviour, a weakened test, a risky change outside scope, a quick fix or workaround where a proper solution belongs, a security problem. Nits and pre-existing issues are findings, not followups; if those are all you found, the verdict is "pass".
 
 Write the review in markdown: verdict first, then the acceptance checklist, then findings ordered by severity, each with file:line and a concrete fix. Be brief on what is fine. End with exactly one block of valid JSON, in one of these two shapes:
 \`\`\`wf-review

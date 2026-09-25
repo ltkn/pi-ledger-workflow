@@ -148,6 +148,18 @@ test("prompts: placeholders filled; worker brief has the verify command and the 
   const { managerSystem, workerSystem, workerBrief } = await import("../extensions/wf/prompts.ts");
   const { DEFAULT_CONFIG } = await import("../extensions/wf/ledger.ts");
   for (const p of [managerSystem(DEFAULT_CONFIG), workerSystem(DEFAULT_CONFIG)]) assert.doesNotMatch(p, /ATTEMPT_LIMIT|QUESTION_POLICY|NOTES_CAP/);
+  const P = await import("../extensions/wf/prompts.ts");
+  for (const [name, text] of Object.entries({
+    scope: P.scopePrompt("f", null),
+    plan: P.planPrompt("", false),
+    manager: managerSystem(DEFAULT_CONFIG),
+    worker: workerSystem(DEFAULT_CONFIG),
+    tester: P.TESTER_SYSTEM,
+    reviewer: P.REVIEWER_SYSTEM,
+  }))
+    assert.match(text, /No quick fixes|never a workaround|hardcoded or special-cased/, `${name} lacks the quality bar`);
+  for (const [name, text] of Object.entries({ worker: workerSystem(DEFAULT_CONFIG), tester: P.TESTER_SYSTEM, reviewer: P.REVIEWER_SYSTEM }))
+    assert.match(text, /Don't restate what the code does[\s\S]*no history/, `${name} lacks the comment rules`);
 
   const led: any = { read: () => "" };
   const st: any = { lastReport: { task: "T2", status: "partial", summary: "records done, tests remain" } };
