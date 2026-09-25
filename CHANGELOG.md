@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- No length caps by default: `context.md`, `plan.md` and `notes.md` reach every brief whole (they used to be cut at 6000/4000/8000 chars, silently). `caps` stays available for small-context models (0 = no cap); configs that still carry the old default caps are cleaned up automatically. Test output is summarized with more key lines (100) and tail (80), up to 20000 chars; the manager sees the whole recent log and up to 20000 chars of the round's diff
+- No length hints in the prompts: `context.md` and `plan.md` have no limit (complete beats short); the core difficulty, approaches and the plan's approach take as much detail as they need; as many tasks as the feature needs; the manager checks facts with tools whenever needed and explains its reasoning; worker and summarizer summaries and notes have no length target (notes are still rewritten, not appended)
 - `/wf:models`: shows which model plays which role and changes it: `single`, `mixed <strong> <worker> [after]` (strong model on tester, manager and reviewer, cheaper one on the worker), one role, or `escalate <model> [after] | off`; interactive picker from Pi's available models
 - Escalation: a task that has failed `afterAttempts` times on the worker model gets its next attempts on a stronger model (on by default with `mixed`); listed in the build summary and counted in `/wf:stats`
 - Models are validated against Pi's registry (known, with credentials) before every build, review and test run

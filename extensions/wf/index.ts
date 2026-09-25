@@ -658,7 +658,7 @@ export default function wf(pi: ExtensionAPI) {
           if (report.status === "done" && st.lastVerify?.ok !== false && !flags.length) next.status = "done";
           st.lastReport = { ...report, task: next.id, changed: lastRoundChanged };
           if (pre && post && entry) {
-            const d = diffSummary(ctx.cwd, pre.commit, post.commit, 3000);
+            const d = diffSummary(ctx.cwd, pre.commit, post.commit, 20000);
             const flagLines = flags.map((f) => `${f.kind}: ${f.detail}`);
             st.lastRound = { round: n, task: next.id, stat: d.stat, patch: d.patch, flags: flagLines, notices };
             entry.files = changedPaths(ctx.cwd, pre.commit, post.commit);

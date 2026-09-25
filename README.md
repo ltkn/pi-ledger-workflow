@@ -117,9 +117,9 @@ Press **Esc** during build or review to stop; `/wf:build` resumes.
 | `context.md` | scope (main session) | workers |
 | `options.md` | scope | you, plan |
 | `decisions.md` | plan, your answers/guidance | everyone — binding |
-| `plan.md` | plan (cap 4000) | everyone |
+| `plan.md` | plan | everyone |
 | `tasks.json` | plan, then manager via harness | manager, status |
-| `notes.md` | harness, from each worker's report — **rewritten**, not appended (cap 8000) | manager, workers |
+| `notes.md` | harness, from each worker's report — **rewritten**, not appended | manager, workers |
 | `assumptions.md` | harness | reviewer, you |
 | `log.md` | harness, per round | manager (last 4), you |
 | `review.md` | `/wf:review` | you |
@@ -150,7 +150,7 @@ its task), and lets `/wf:undo` restore any earlier state. See
 | `verify` | `"auto"` | detects `./mvnw`/`mvn -B -q test`, gradle, npm, cargo, go, pytest; `null` disables; any shell string |
 | `verifyTimeoutSec` | 900 | |
 | `questions` | `"ask"` | or `"assume"` |
-| `caps` | plan 4000, notes 8000, context 6000, verifyOutput 4000 | chars fed into briefs |
+| `caps` | plan 0, notes 0, context 0, verifyOutput 20000 | max chars of each file fed into briefs; 0 = no cap. Only worth setting for a small-context model |
 | `models` | `{}` | `{"manager": "…", "worker": "…", "reviewer": "…", "tester": "…"}` as `provider/model`; unset = your session's model. Easiest via `/wf:models` |
 | `escalate` | null | `{"afterAttempts": 2, "model": "provider/model"}`: a task that failed that often moves to this model (set by `/wf:models mixed`) |
 | `thinking` | `{}` | per role; unset = your session's level |
@@ -171,10 +171,10 @@ themselves; the full verify is the gate.
 | Manager: plan + 3–6 seed tasks | `/wf:plan` — but in your session, so you shape it |
 | Brainstorm worker: difficulty, approaches, pitfalls, no solution | `/wf:scope` → `options.md` |
 | Manager: fold results into one task list, name the single next task | build loop manager (read-only tools), each round |
-| Worker: do one task, rewrite notes as a curated whole | build worker; harness writes its `notes` field, capped |
+| Worker: do one task, rewrite notes as a curated whole | build worker; harness writes its notes block (optionally capped) |
 | Verifier on public tests, verdict is ground truth, a fail vetoes "done" | your test command after every changed round; failing tests block completion and spawn a fix task |
 | Manager can't finish on an empty workspace | "done" requires changes vs. the base commit, no open tasks, and a fresh passing verify |
-| Guards: round budget, no-progress, cut-off summarizer, capped plan/notes | `maxRounds`; reissue-after-no-change stops; a reportless/cut-off worker is first resumed in its own session and asked for the report (read-only), then summarised by a fresh call if that fails; caps |
+| Guards: round budget, no-progress, cut-off summarizer, capped plan/notes | `maxRounds`; reissue-after-no-change stops; a reportless/cut-off worker is first resumed in its own session and asked for the report (read-only), then summarised by a fresh call if that fails; caps are off by default (modern context windows make truncation cost more than it saves) and available in `caps` |
 | Finalizer | harness-written handoff message (no model call — the code is already on disk) |
 | §4 proposal: fresh-perspective workers against anchoring | `/wf:review` deliberately gets objective/plan/decisions/diff but **not** worker notes |
 

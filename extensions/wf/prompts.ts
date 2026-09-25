@@ -3,7 +3,7 @@
  * task-specific demonstrations). The ledger carries the specifics.
  */
 import { tip } from "./help.ts";
-import { type Config, type Ledger, type Task, type State, cap, LEDGER_DIR } from "./ledger.ts";
+import { type Config, type Ledger, type Task, type State, LEDGER_DIR } from "./ledger.ts";
 import { type Spec, SPEC_DIR, specState } from "./spec.ts";
 
 const L = LEDGER_DIR.replace(/\\/g, "/");
@@ -21,20 +21,20 @@ This is the SCOPE phase of a ledger-based workflow. Fresh-context workers will l
 
 Do NOT modify source code in this phase. Investigate the codebase with your tools, then write two files:
 
-1. ${L}/context.md — facts only, with paths (aim for under ~6000 chars):
-   - the files/classes/modules this feature touches, one line each on their role
+1. ${L}/context.md — facts, with paths: everything a worker who never saw this conversation needs; there is no length limit:
+   - the files/classes/modules this feature touches, and the role each plays
    - existing patterns and conventions to follow (find the closest existing feature and describe how it is built)
    - test setup: frameworks, where tests live, and the exact command to run one test class quickly
    - ${baseline}
    - constraints and risks you found
 
 2. ${L}/options.md — exploration:
-   - the core difficulty of this feature in 1–3 sentences
-   - 2–3 candidate approaches with trade-offs, and pitfalls
+   - what makes this feature hard, in as much detail as it takes
+   - the candidate approaches worth considering, with trade-offs and pitfalls
    - your recommendation
    - open questions for the human: only those whose answer changes behaviour, API, or data model and cannot be settled from the code
 
-Then reply in chat, briefly: key findings, your recommendation, and the numbered open questions. End your reply with this block, verbatim:
+Then reply in chat with the key findings, your recommendation, and the numbered open questions. End your reply with this block, verbatim:
 
 ${tip("scope.done")}`;
 }
@@ -46,26 +46,26 @@ This is the PLAN phase. Read ${L}/objective.md, context.md, options.md and decis
 
 1. ${L}/decisions.md — every decision the human made in this conversation, as bullets under "# Decisions (binding for every worker)". Keep existing entries, except where the human changed their mind: then replace the old entry instead of keeping both. Workers never see this chat: a decision not written here is lost.
 
-2. ${L}/plan.md — at most ~4000 chars:
-   - Approach: 3–6 sentences
+2. ${L}/plan.md — no length limit; complete matters more than short:
+   - Approach: explained as fully as a worker needs it
    - Acceptance criteria: checkable bullets (behaviour, API, tests)
    - Out of scope
 
 3. ${L}/tasks.json — {"tasks":[{"id":"T1","title":"…","detail":"…","acceptance":"…","status":"todo"}]}
-   - 3–8 tasks, ordered by dependency, each one coherent change a fresh worker can finish in one session; prefer more, smaller tasks over fewer large ones
+   - as many tasks as the feature needs, ordered by dependency, each one coherent change a fresh worker can finish in one session; prefer more, smaller tasks over fewer large ones
    - detail is read by a worker who never saw this conversation: name the files/classes to touch and the pattern to follow
    - acceptance is something the worker can check itself: name the test to add or extend and the behaviour it asserts
    - every task must leave the project compiling and the test suite passing (the harness runs the tests after every task)
    - tests belong to the task that introduces the behaviour, not to a final "write tests" task
 ${hasTasks ? '   - tasks.json already exists: keep every existing task with its id, status, attempts and source; revise only tasks that are not done; to drop a task set its status to "dropped" (never delete entries); new tasks get new ids (never reuse an id)\n' : ""}
-Then summarise the plan in chat (approach + task list, one line each) and any question still open. End your reply with this block, verbatim:
+Then summarise the plan in chat (the approach and the task list) and any question still open. End your reply with this block, verbatim:
 
 ${tip("plan.done")}`;
 }
 
 /* ================================ build loop ================================= */
 
-export const MANAGER_SYSTEM = `You are the MANAGER in a ledger-based build loop. You run in a fresh context and see only the ledger in your brief. You do not write code and you must not modify files. You may use read-only tools to settle a specific doubt (at most about 5 calls); codebase facts are in ${L}/context.md.
+export const MANAGER_SYSTEM = `You are the MANAGER in a ledger-based build loop. You run in a fresh context and see only the ledger in your brief. You do not write code and you must not modify files. You may use read-only tools whenever a fact needs checking (leave the implementation work to the worker); codebase facts are in ${L}/context.md.
 
 Each round you:
 1. Fold the last worker report and the verification result into the task list. The harness has already marked the last task done if its worker reported done and verification did not fail. Mark a task done yourself only if the report shows it complete AND verification did not fail. Add a sub-task when the report proposes one that serves the objective. Drop a task only when it turned out unnecessary (a duplicate, or already done by another task), never because it is hard or failing: split it, change the approach, or ask instead.
@@ -96,7 +96,7 @@ End your reply with exactly one block of valid JSON, like this:
 - instruction: what is new since the last round (quote the failing test or error, say what was already tried), where to start (files), and what to avoid. Do not restate the task; the worker already has it.
 - done: true only when you declare the feature done.
 - needs_input: null, or one precise question with options and your recommendation.
-- rationale: one or two sentences; for every task you drop, say why.
+- rationale: your reasoning; for every task you drop, say why.
 - Keep every string on one line.`;
 
 export const WORKER_SYSTEM = `You are a WORKER in a ledger-based build loop. You run in a fresh context: you do not see the human conversation or previous workers, only the brief. objective.md, plan.md and decisions.md define intent; decisions.md is binding. When sources disagree, this order wins: the spec tests and decisions.md (newest entry first), both approved by the human > the manager's instruction > the task detail > plan.md.
@@ -122,7 +122,7 @@ Statuses:
 
 End your final message with a short summary, then these two blocks, in this order.
 
-The FULL replacement for notes.md, as plain markdown (max NOTES_CAP chars, no code fences inside), under these four headings. Keep what is still true from the current notes, fix what is wrong, drop what is obsolete; do not just append, and do not repeat context.md. Most important first: the end may be cut to fit.
+The FULL replacement for notes.md, as plain markdown (NOTES_CAP, no code fences inside), under these four headings. Keep what is still true from the current notes, fix what is wrong, drop what is obsolete; do not just append, and do not repeat context.md. Most important first: the end may be cut to fit.
 \`\`\`wf-notes
 ## Where things are
 - …
@@ -143,7 +143,7 @@ The report, as valid JSON:
  "proposed": []}
 \`\`\`
 - status: exactly one of "done", "partial", "blocked", "needs_input" (see Statuses).
-- summary: what you changed and why, and which checks you ran with what result; 2–4 sentences.
+- summary: what you changed and why, and which checks you ran with what result.
 - assumptions: choices a reviewer might disagree with (behaviour, API, data, names others will see) that the human did not specify; not routine implementation details; [] if none.
 - question: only with "needs_input", otherwise null.
 - proposed: work the objective still needs that no existing task covers; not refactors or nice-to-haves; [] if none.
@@ -163,7 +163,7 @@ export function managerSystem(cfg: Config): string {
 export function workerSystem(cfg: Config): string {
   return WORKER_SYSTEM.replace("QUESTION_POLICY", cfg.questions === "ask" ? ASK_POLICY_WORKER : ASSUME_POLICY_WORKER).replace(
     "NOTES_CAP",
-    String(cfg.caps.notes),
+    cfg.caps.notes > 0 ? `max ${cfg.caps.notes} chars` : "no length limit",
   );
 }
 
@@ -213,7 +213,7 @@ export function managerBrief(led: Ledger, cfg: Config, st: State, tasks: Task[],
           `${st.lastRound.flags.length ? `⚑ HARNESS FLAGS:\n${st.lastRound.flags.map((f) => `- ${f}`).join("\n")}\n\n` : ""}${st.lastRound.notices?.length ? `Notices:\n${st.lastRound.notices.map((f) => `- ${f}`).join("\n")}\n\n` : ""}${st.lastRound.stat || "(no file changes)"}${st.lastRound.patch ? `\n\n${st.lastRound.patch}` : ""}`,
         )
       : "",
-    section("Recent log", cap(log, 3000)),
+    section("Recent log", log),
   ].join("\n");
 }
 
@@ -259,7 +259,7 @@ Output only these two blocks. First the FULL replacement for notes.md, as plain 
 \`\`\`
 Then the report, as valid JSON with every string on one line:
 \`\`\`wf-report
-{"status": "partial", "summary": "what was done and where it stopped, 2–4 sentences", "assumptions": [], "proposed": []}
+{"status": "partial", "summary": "what was done and where it stopped", "assumptions": [], "proposed": []}
 \`\`\``;
 
 export function summarizerBrief(led: Ledger, cfg: Config, task: Task, transcript: string): string {
@@ -267,7 +267,7 @@ export function summarizerBrief(led: Ledger, cfg: Config, task: Task, transcript
     `# Summarise the attempt at task ${task.id}: ${task.title}\n`,
     section("The task", `${task.detail ?? ""}\n\nAcceptance: ${task.acceptance ?? "(see plan)"}`),
     section("Current notes.md", led.read("notes.md", cfg.caps.notes)),
-    section("Worker transcript (tail)", transcript.slice(-12000)),
+    section("Worker transcript (tail)", transcript.slice(-60000)),
   ].join("\n");
 }
 
@@ -309,7 +309,7 @@ export function testerBrief(led: Ledger, cfg: Config, tasks: Task[], targets: Ta
         .map((t) => {
           const prev = previous[t.id] ?? [];
           return `### ${t.id}: ${t.title}\n\n${t.detail ?? ""}\n\nAcceptance: ${t.acceptance ?? "(see plan)"}${
-            prev.length ? `\n\nPrevious spec tests for ${t.id} (revise them):\n${prev.map((f) => `--- ${f.rel}\n${cap(f.content, 3000)}`).join("\n")}` : ""
+            prev.length ? `\n\nPrevious spec tests for ${t.id} (revise them):\n${prev.map((f) => `--- ${f.rel}\n${f.content}`).join("\n")}` : ""
           }`;
         })
         .join("\n\n"),

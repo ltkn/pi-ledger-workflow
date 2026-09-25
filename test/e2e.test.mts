@@ -341,3 +341,24 @@ test("escalation moves a failing task to the strong model; nearly full context i
   assert.match(card, /escalated 2 \(0 finished their task\)/);
   assert.match(card, /\nworker +3 +2\.0k 83%/);
 });
+
+test("no caps by default: old default caps are migrated away, chosen caps are kept, long files reach workers whole", async () => {
+  const { Ledger, DEFAULT_CONFIG } = await import("../extensions/wf/ledger.ts");
+  const { workerBrief } = await import("../extensions/wf/prompts.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-caps-"));
+  const led = new Ledger(dir);
+  led.write("config.json", JSON.stringify({ maxRounds: 7, caps: { plan: 4000, notes: 8000, context: 6000, verifyOutput: 4000 } }));
+  assert.deepEqual(led.config().caps, DEFAULT_CONFIG.caps);
+  assert.equal(JSON.parse(led.read("config.json")).caps, undefined); // file cleaned up
+  assert.equal(led.config().maxRounds, 7); // everything else kept
+
+  led.write("config.json", JSON.stringify({ caps: { context: 6000 } }));
+  assert.equal(led.config().caps.context, 6000); // a real choice stays
+
+  led.write("config.json", "{}");
+  const long = "x".repeat(50000) + "END";
+  led.write("context.md", long);
+  const brief = workerBrief(led, led.config(), {} as any, { id: "T1", title: "t", status: "doing", attempts: 1 }, "", null);
+  assert.match(brief, /xEND/);
+  assert.doesNotMatch(brief, /truncated/);
+});

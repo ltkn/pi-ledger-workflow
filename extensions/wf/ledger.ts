@@ -166,6 +166,7 @@ export interface Config {
   verifyTimeoutSec: number;
   /** "ask": workers/manager may pause for a decision. "assume": never pause, record assumptions. */
   questions: "ask" | "assume";
+  /** Max chars of each ledger file fed into briefs; 0 = no cap (the default). For small-context models. */
   caps: { plan: number; notes: number; context: number; verifyOutput: number };
   /** provider/model per role; unset = the model of your current Pi session. */
   models: { manager?: string; worker?: string; reviewer?: string; tester?: string };
@@ -188,7 +189,7 @@ export const DEFAULT_CONFIG: Config = {
   verify: "auto",
   verifyTimeoutSec: 900,
   questions: "ask",
-  caps: { plan: 4000, notes: 8000, context: 6000, verifyOutput: 4000 },
+  caps: { plan: 0, notes: 0, context: 0, verifyOutput: 20000 },
   models: {},
   thinking: {},
   childExtensions: false,
@@ -198,8 +199,12 @@ export const DEFAULT_CONFIG: Config = {
   escalate: null,
 };
 
+/** Truncate to n chars with a marker; n <= 0 means no cap. */
+/** Written into every config.json before 0.3; see Ledger.config(). */
+const OLD_DEFAULT_CAPS = { plan: 4000, notes: 8000, context: 6000, verifyOutput: 4000 };
+
 export function cap(text: string, n: number): string {
-  if (!text || text.length <= n) return text ?? "";
+  if (!text || n <= 0 || text.length <= n) return text ?? "";
   return `${text.slice(0, n)}\n…[truncated ${text.length - n} chars]`;
 }
 
@@ -243,6 +248,11 @@ export class Ledger {
     if (!this.exists("config.json")) this.write("config.json", `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
     try {
       const raw = JSON.parse(this.read("config.json"));
+      // Caps identical to the old defaults were never a choice: drop them so the new defaults (no caps) apply.
+      if (JSON.stringify(raw.caps) === JSON.stringify(OLD_DEFAULT_CAPS)) {
+        delete raw.caps;
+        this.write("config.json", `${JSON.stringify(raw, null, 2)}\n`);
+      }
       return {
         ...DEFAULT_CONFIG,
         ...raw,
