@@ -12,7 +12,7 @@ discuss it with Pi right there. `/wf:help` on its own lists the topics.
 <!-- wf:topic flow -->
 ## The normal path
 
-A feature goes through four commands, and you only really work in the first two.
+A feature goes through five commands, and you only really work in the first three.
 
 1. **`/wf:scope <feature>`**: Pi reads the code, writes down what it found
    (`context.md`) and the possible approaches (`options.md`), and asks you a
@@ -21,10 +21,14 @@ A feature goes through four commands, and you only really work in the first two.
 2. **`/wf:plan`**: Pi turns that conversation into `decisions.md`, `plan.md`
    and a task list. Read the tasks. If something's off, say so and run
    `/wf:plan` again; it revises and keeps anything already done.
-3. **`/wf:build`**: now it runs by itself. Each round a fresh manager picks
+3. **`/wf:tests`**: a fresh tester writes the acceptance tests from the plan
+   alone, before any code exists. You read them: they're the spec in executable
+   form, and the implementers won't be able to change them. See
+   `/wf:help spec-tests`.
+4. **`/wf:build`**: now it runs by itself. Each round a fresh manager picks
    one task, a fresh worker does it, and your test suite checks the result. You
    watch the widget, or go do something else.
-4. **`/wf:review`**: a fresh reviewer who never saw the build's reasoning
+5. **`/wf:review`**: a fresh reviewer who never saw the build's reasoning
    compares the diff against the objective, plan and decisions. If it passes,
    you commit.
 
@@ -32,6 +36,48 @@ The one thing to keep in mind all along: **build workers never see your
 chat.** They only see `.pi/wf/`. Anything you decide has to land in
 `decisions.md`. `/wf:plan` and `/wf:build <text>` do that for you; plain
 conversation does not.
+<!-- /wf -->
+
+<!-- wf:topic spec-tests -->
+## Spec tests
+
+Normally the worker who writes the code also writes the tests that prove it
+works: it grades its own homework. `/wf:tests` fixes that. After `/wf:plan`, a
+fresh **tester** reads only the objective, decisions, plan and tasks, and writes
+acceptance tests for each task, before any code exists.
+
+- **They're parked, not in your code yet.** Files go to
+  `.pi/wf/spec/<task>/<path in the repo>`, so tests for classes that don't exist
+  yet can't break compilation. When a task starts, the build copies its tests
+  into place; the worker makes them pass in the same round.
+- **You review them first.** `/wf:tests` posts every test with what it checks,
+  plus **gaps in the spec**: things the tester had to guess. Those gaps are gold:
+  if a fresh reader can't write the tests from your plan, a worker can't build
+  it right either. Read the files in `.pi/wf/spec/`, then:
+  - change one task's tests: `/wf:tests T3 <what to change>`
+  - fix a gap: say the decision, `/wf:plan` (the task changes, so its tests go
+    stale), then `/wf:tests` rewrites only the stale ones.
+- **Implementers can't change them.** Before every test run the build restores
+  them from the parked copy. If a worker thinks one is wrong, it reports
+  blocked, and the build asks you; only `/wf:tests` changes them.
+- **They're new files only.** The tester never edits your existing tests;
+  a file that would overwrite an existing one is dropped (you're told).
+
+**When tests don't fit**, skip them, but never silently:
+
+- One task (config, a pure rename): the tester skips it itself and says why, or
+  `/wf:tests skip T2 <why>`.
+- The whole feature (a spike, a UI tweak, an urgent fix): `/wf:tests skip <why>`,
+  or just run `/wf:build` and choose "build without" when it asks.
+- Never: `"specTests": false` in `.pi/wf/config.json`.
+
+Without spec tests the build works as before: workers write their own tests,
+the checks still run, and the reviewer is told to look harder at whether the
+tests really test the behaviour. Spec tests need a verify command; without
+one they're off.
+
+Tasks added later (review follow-ups, tasks the manager adds) have no spec
+tests; `/wf:tests` adds them, and the build tells you which open tasks lack them.
 <!-- /wf -->
 
 <!-- wf:topic widget -->
@@ -315,6 +361,7 @@ a question. Pair it with a larger `maxRounds` for long runs.
 - **`/wf:plan <change>`** when a task or the plan is wrong.
 - **`/wf:undo`** when the code is wrong.
 - **The main session** for small fixes after the build is done.
+- **`/wf:tests`** before building: read the gaps, they're where the plan is unclear.
 - **Look before you steer**: `/wf:status`, `log.md`, `notes.md`, `git diff`.
 - **Commit as tasks succeed**, so undo is always cheap.
 - If you decided it in chat, **put it on the ledger**.
@@ -338,7 +385,24 @@ reference. Text in `{braces}` is filled in with the actual task, limit and so on
 **What now**
 - Check the tasks: small, in dependency order, tests inside the task that adds the behaviour.
 - Want changes? Say them here, then `/wf:plan` again (done tasks are kept).
-- Next: `/wf:build`. Esc stops it safely; `/wf:build` resumes · more: `/wf:help widget`
+- Next: `/wf:tests` writes the acceptance tests for you to review, then `/wf:build` · more: `/wf:help spec-tests`
+<!-- /wf -->
+
+### After /wf:tests
+<!-- wf:tip tests.done -->
+**What now**
+- Read the tests (in `.pi/wf/spec/`) and the gaps above: this is your last cheap chance to catch a wrong spec.
+- Change one task's tests: `/wf:tests <task> <what to change>` · a gap means the plan is unclear: decide, `/wf:plan`, then `/wf:tests`.
+- No tests for a task: `/wf:tests skip <task> <why>`.
+- Next: `/wf:build` · more: `/wf:help spec-tests`
+<!-- /wf -->
+
+### Build asked for spec tests
+<!-- wf:tip tests.missing -->
+**What now**
+- `/wf:tests` writes acceptance tests from the plan; you review them, then `/wf:build`.
+- Building without them on purpose? `/wf:tests skip <why>`, then `/wf:build`.
+- More: `/wf:help spec-tests`
 <!-- /wf -->
 
 ### Build complete
@@ -426,7 +490,7 @@ reference. Text in `{braces}` is filled in with the actual task, limit and so on
 ### Review added follow-up tasks
 <!-- wf:tip review.followups -->
 **What now**
-- `/wf:build` works through {tasks}.
+- `/wf:build` works through {tasks}. Want spec tests for them first? `/wf:tests`.
 - Disagree with one? Say so here, then `/wf:plan drop <id>` before building.
 - More: `/wf:help findings`
 <!-- /wf -->

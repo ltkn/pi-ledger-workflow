@@ -12,6 +12,7 @@ see [Credits](#credits).
 ```
 /wf:scope <feature>   investigate + explore approaches      main session · you discuss
 /wf:plan [guidance]   decisions + plan + task ledger        main session · you approve
+/wf:tests [T# | skip] acceptance tests from the spec        fresh context · you review
 /wf:build [answer]    manager → worker → verify, repeated   fresh contexts · automatic
 /wf:review [focus]    independent review of the diff        fresh context
 /wf:status            where things stand
@@ -21,7 +22,7 @@ see [Credits](#credits).
 
 `wf` = workflow. The `name:verb` form mirrors Pi's own `/skill:name`, can't
 collide with built-ins or other extensions' `/plan`, and typing `/wf` lists
-all seven commands.
+all eight commands.
 
 **Day-to-day guide:** [`workflow-help.md`](extensions/wf/workflow-help.md)
 covers the normal path and what to do when a task keeps failing, the build
@@ -54,6 +55,9 @@ you: "Only from PENDING. Publish OrderCancelled via DomainEventPublisher."
 /wf:plan
    → decisions.md (what you just said), plan.md, tasks.json
 you: "Merge T3 into T2."            → /wf:plan again (revises, keeps done tasks)
+/wf:tests
+   → a fresh tester writes acceptance tests from the plan alone (parked in .pi/wf/spec/)
+     and lists the gaps it had to guess; you review them
 /wf:build
    round 1  manager → T1 → worker → mvn test ✓
    round 2  manager → T2 → worker → mvn test ✗ → manager → fix → ✓
@@ -63,6 +67,12 @@ you: "Merge T3 into T2."            → /wf:plan again (revises, keeps done task
    → fresh reviewer vs objective/plan/decisions; follow-ups become R1, R2… tasks
 /wf:build                            → addresses R-tasks
 ```
+
+**Spec tests** close the gap where the worker who writes the code also writes
+the tests that prove it. The tester never sees the implementation; its tests are
+copied into the repo when their task starts and restored before every test run,
+so implementers can't change them. Skippable per task or per feature, never
+silently. See [`/wf:help spec-tests`](extensions/wf/workflow-help.md#spec-tests).
 
 **The one rule that makes this work:** build workers never see your chat. They
 see `.pi/wf/`. `/wf:plan` writes your decisions into `decisions.md`, and
@@ -112,6 +122,7 @@ Press **Esc** during build or review to stop; `/wf:build` resumes.
 | `log.md` | harness, per round | manager (last 4), you |
 | `review.md` | `/wf:review` | you |
 | `checkpoints.json` | harness, per round | `/wf:undo` |
+| `spec/`, `spec.json` | `/wf:tests` (parked acceptance tests + index) | you, workers (their task's), manager, reviewer |
 | `state.json`, `config.json` | harness | — |
 
 Workers are told not to touch `.pi/wf/`; the harness owns every ledger write
@@ -137,10 +148,11 @@ its task), and lets `/wf:undo` restore any earlier state. See
 | `verifyTimeoutSec` | 900 | |
 | `questions` | `"ask"` | or `"assume"` |
 | `caps` | plan 4000, notes 8000, context 6000, verifyOutput 4000 | chars fed into briefs |
-| `models` | `{}` | `{"manager": "…", "worker": "…", "reviewer": "…"}` as `provider/model`; unset = your session's model |
+| `models` | `{}` | `{"manager": "…", "worker": "…", "reviewer": "…", "tester": "…"}` as `provider/model`; unset = your session's model |
 | `thinking` | `{}` | per role; unset = your session's level |
 | `childExtensions` | false | load your other extensions in fresh workers |
 | `workerTools` | read,bash,edit,write,grep,find,ls | |
+| `specTests` | true | acceptance tests from the spec before the build (`/wf:tests`); only when a verify command exists |
 | `checkpoints` | true | shadow snapshots around every round (git only): the manager gets the real diff, lost work and changed/skipped tests are flagged, `/wf:undo` works |
 
 For a large Maven build, point `verify` at the affected module
@@ -162,7 +174,9 @@ themselves; the full verify is the gate.
 | Finalizer | harness-written handoff message (no model call — the code is already on disk) |
 | §4 proposal: fresh-perspective workers against anchoring | `/wf:review` deliberately gets objective/plan/decisions/diff but **not** worker notes |
 
-Deliberate departures: the paper is fully autonomous on a benchmark; here scope
+Deliberate departures: the paper is fully autonomous on a benchmark, with its
+tests given in advance; here `/wf:tests` writes them from your spec, you
+approve them, and the harness keeps implementers from changing them; here scope
 and plan are human checkpoints, questions have a narrow channel, and the
 verifier is your real test suite instead of sample I/O. The paper also shows
 the scaffold can hurt when deliberation talks itself out of a correct simple

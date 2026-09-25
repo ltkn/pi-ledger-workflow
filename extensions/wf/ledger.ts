@@ -75,6 +75,8 @@ export interface RoundRecord {
   stat: string;
   patch: string;
   flags: string[];
+  /** things worth knowing that don't block the task (e.g. spec tests restored after a worker edited them) */
+  notices?: string[];
 }
 
 export interface State {
@@ -105,14 +107,16 @@ export interface Config {
   questions: "ask" | "assume";
   caps: { plan: number; notes: number; context: number; verifyOutput: number };
   /** provider/model per role; unset = the model of your current Pi session. */
-  models: { manager?: string; worker?: string; reviewer?: string };
+  models: { manager?: string; worker?: string; reviewer?: string; tester?: string };
   /** thinking level per role; unset = your current session's level. */
-  thinking: { manager?: string; worker?: string; reviewer?: string };
+  thinking: { manager?: string; worker?: string; reviewer?: string; tester?: string };
   /** Load your other Pi extensions inside fresh workers (wf itself is never needed there). */
   childExtensions: boolean;
   workerTools: string[];
   /** Shadow snapshots around every round: real diffs for the manager, lost-work/tampering detection, /wf:undo. */
   checkpoints: boolean;
+  /** Acceptance tests written from the spec before the build (/wf:tests); only when a verify command exists. */
+  specTests: boolean;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -127,6 +131,7 @@ export const DEFAULT_CONFIG: Config = {
   childExtensions: false,
   workerTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
   checkpoints: true,
+  specTests: true,
 };
 
 export function cap(text: string, n: number): string {
@@ -230,6 +235,18 @@ export class Ledger {
       return [];
     }
   }
+  /** undefined until /wf:tests ran or the human chose to build without spec tests */
+  spec(): import("./spec.ts").Spec | undefined {
+    try {
+      return JSON.parse(this.read("spec.json"));
+    } catch {
+      return undefined;
+    }
+  }
+  saveSpec(spec: import("./spec.ts").Spec): void {
+    this.write("spec.json", `${JSON.stringify(spec, null, 2)}\n`);
+  }
+
   saveCheckpoints(list: Checkpoint[]): void {
     this.write("checkpoints.json", `${JSON.stringify(list, null, 2)}\n`);
   }

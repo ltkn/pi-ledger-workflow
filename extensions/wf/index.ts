@@ -3,6 +3,7 @@
  *
  *   /wf:scope <feature>   investigate + explore        (main session, you discuss)
  *   /wf:plan [guidance]   decisions + plan + tasks     (main session, you approve)
+ *   /wf:tests [T# | skip] acceptance tests from the spec (fresh context, you review)
  *   /wf:build [answer]    manager → worker → verify    (fresh contexts, automatic)
  *   /wf:review [focus]    independent review           (fresh context)
  *   /wf:status            where things stand
@@ -16,6 +17,8 @@
  * This is an independent adaptation to interactive coding in Pi; see README.md
  * ("Credits" and "What's taken from the paper").
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type Flag, changedPaths, diffSummary, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
 import {
@@ -38,6 +41,7 @@ import {
 import {
   REVIEWER_SYSTEM,
   SUMMARIZER_SYSTEM,
+  TESTER_SYSTEM,
   managerBrief,
   managerSystem,
   planPrompt,
@@ -45,11 +49,13 @@ import {
   scopePrompt,
   summarizerBrief,
   taskLine,
+  testerBrief,
   workerBrief,
   workerSystem,
 } from "./prompts.ts";
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
 import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
+import { type Spec, parkedFiles, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
 const cmd = (verb: string) => `${PREFIX}:${verb}`;
@@ -167,6 +173,26 @@ export default function wf(pi: ExtensionAPI) {
       if (!loaded.ok) return ctx.ui.notify(`${loaded.error}. Run /${cmd("plan")} first.`, "warning");
       let tasks = loaded.tasks;
       const cfg = led.config();
+      const verifyCmd = resolveVerify(cfg.verify, ctx.cwd);
+
+      // Spec tests: on whenever a verify command exists. Never skipped silently: ask once per feature.
+      const specOn = cfg.specTests && !!verifyCmd;
+      let spec = led.spec();
+      const open = (t: Task) => t.status === "todo" || t.status === "doing";
+      if (specOn && !spec && tasks.some(open)) {
+        const WRITE = `Stop: I'll write them first with /${cmd("tests")}`;
+        const WITHOUT = "Build without spec tests for this feature";
+        const choice = ctx.hasUI ? await ctx.ui.select("This feature has no spec tests yet", [WRITE, WITHOUT]) : WITHOUT;
+        if (choice !== WITHOUT) return post(tip("tests.missing"));
+        const reason = ctx.hasUI ? ((await ctx.ui.input("Why build without spec tests? (optional, shown to the reviewer)", "")) ?? "").trim() : "";
+        spec = { status: "skipped", reason: reason || "no reason given", tasks: {} };
+        led.saveSpec(spec);
+        led.recordDecision(`Build without spec tests${reason ? `: ${reason}` : ""}.`);
+      } else if (specOn && spec?.status === "written") {
+        const lacking = tasks.filter((t) => open(t) && ["missing", "stale"].includes(specState(spec, t))).map((t) => t.id);
+        if (lacking.length) ctx.ui.notify(`No current spec tests for ${lacking.join(", ")}: /${cmd("tests")} adds them. Building anyway.`, "info");
+      }
+      const liveSpec = specOn && spec?.status === "written" ? spec : undefined;
 
       // A task paused on its attempt limit (and not since dropped/finished/reset by hand)
       // needs an answer like any question, and the answer buys it a fresh set of attempts.
@@ -200,7 +226,6 @@ export default function wf(pi: ExtensionAPI) {
       st.phase = "building";
       led.saveState(st);
 
-      const verifyCmd = resolveVerify(cfg.verify, ctx.cwd);
       const abort = new AbortController();
       const unsubEsc =
         ctx.mode === "tui"
@@ -341,7 +366,7 @@ export default function wf(pi: ExtensionAPI) {
             cwd: ctx.cwd,
             role: "manager",
             systemPrompt: managerSystem(cfg),
-            brief: managerBrief(led, cfg, st, tasks, round, cfg.maxRounds),
+            brief: managerBrief(led, cfg, st, tasks, round, cfg.maxRounds, specOn ? spec : undefined),
             prompt: "Carry out the brief in the attached file. End with the wf-manage block.",
             tools: READ_ONLY,
             model: roleModel(ctx, cfg, "manager"),
@@ -423,6 +448,10 @@ export default function wf(pi: ExtensionAPI) {
           /* ---- WORK (fresh context, full tools) ---- */
           const fpBefore = fingerprint(ctx.cwd);
           const n = st.roundsTotal;
+          // Spec tests of this task and of finished tasks are in place for the round, and restored after it.
+          const specIds = liveSpec ? tasks.filter((t) => t.id === next!.id || t.status === "done").map((t) => t.id).filter((id) => liveSpec.tasks[id]?.files.length) : [];
+          const syncSpecs = () => specIds.flatMap((id) => syncSpecFiles(ctx.cwd, id, liveSpec!.tasks[id].files));
+          syncSpecs();
           const pre = start ? snapshot(ctx.cwd, `wf: before round ${n} (${next.id})`) : undefined;
           let entry: Checkpoint | undefined;
           if (pre) {
@@ -436,7 +465,7 @@ export default function wf(pi: ExtensionAPI) {
             cwd: ctx.cwd,
             role: "worker",
             systemPrompt: workerSystem(cfg),
-            brief: workerBrief(led, cfg, st, next, dec?.instruction ?? "", verifyCmd),
+            brief: workerBrief(led, cfg, st, next, dec?.instruction ?? "", verifyCmd, liveSpec),
             prompt: `Carry out the brief in the attached file: do only task ${next.id}. End with the wf-notes and wf-report blocks.`,
             tools: cfg.workerTools,
             model: roleModel(ctx, cfg, "worker"),
@@ -485,6 +514,9 @@ export default function wf(pi: ExtensionAPI) {
           if (notes?.trim()) led.write("notes.md", cap(notes.trim(), cfg.caps.notes) + "\n");
 
           /* ---- INSPECT (harness): what the round really changed, and anything it broke ---- */
+          const notices: string[] = [];
+          const edited = syncSpecs();
+          if (edited.length) notices.push(`spec tests edited or removed by the worker, restored: ${edited.join(", ")}`);
           let post = pre ? snapshot(ctx.cwd, `wf: after round ${n} (${next.id})`) : undefined;
           let flags: Flag[] = [];
           let pauseAfter: Pause | undefined;
@@ -542,7 +574,7 @@ export default function wf(pi: ExtensionAPI) {
           if (pre && post && entry) {
             const d = diffSummary(ctx.cwd, pre.commit, post.commit, 3000);
             const flagLines = flags.map((f) => `${f.kind}: ${f.detail}`);
-            st.lastRound = { round: n, task: next.id, stat: d.stat, patch: d.patch, flags: flagLines };
+            st.lastRound = { round: n, task: next.id, stat: d.stat, patch: d.patch, flags: flagLines, notices };
             entry.files = changedPaths(ctx.cwd, pre.commit, post.commit);
             const v = st.lastVerify?.ok === true ? "✓" : st.lastVerify?.ok === false ? "✗" : "–";
             entry.summary = `${next.id} ${report.status} · ${d.files} files +${d.added} −${d.removed} · verify ${v}${flags.length ? " · ⚑ " + flags.map((f) => f.kind).join(", ") : ""} · ${cap(report.summary.replace(/\s+/g, " "), 60)}`;
@@ -563,6 +595,7 @@ export default function wf(pi: ExtensionAPI) {
               `Worker: ${report.status} — ${report.summary}\n` +
               (assumptions.length ? `Assumptions: ${assumptions.join("; ")}\n` : "") +
               (flags.length ? `Harness flags: ${flags.map((f) => `${f.kind}: ${f.detail}`).join("; ")}\n` : "") +
+              (notices.length ? `Notices: ${notices.join("; ")}\n` : "") +
               `Verify: ${st.lastVerify?.summary.split("\n")[0] ?? "-"}\n` +
               `Changed files this round: ${lastRoundChanged ? "yes" : "no"} · cost $${(mres.cost + wres.cost).toFixed(4)}\n`,
           );
@@ -677,7 +710,7 @@ export default function wf(pi: ExtensionAPI) {
           role: "reviewer",
           systemPrompt: REVIEWER_SYSTEM,
           prompt: "Review the change described in the attached file. End with the wf-review block.",
-          brief: reviewerBrief(led, st, tasks, changedSinceBase(ctx.cwd, st.baseCommit), diffStat(ctx.cwd, st.baseCommit), args.trim()),
+          brief: reviewerBrief(led, st, tasks, changedSinceBase(ctx.cwd, st.baseCommit), diffStat(ctx.cwd, st.baseCommit), args.trim(), led.spec()),
           tools: [...READ_ONLY, "bash"],
           model: roleModel(ctx, cfg, "reviewer"),
           thinking: roleThinking(ctx, cfg, "reviewer"),
@@ -751,11 +784,174 @@ export default function wf(pi: ExtensionAPI) {
         `verify: ${resolveVerify(cfg.verify, ctx.cwd) ?? "(none)"} → ${st.lastVerify ? (st.lastVerify.ok === null ? "n/a" : st.lastVerify.ok ? "PASS" : "FAIL") : "not run"}`,
         ...(loaded.ok ? loaded.tasks.map(taskLine) : [`tasks: ${loaded.error}`]),
         ...(st.pause ? [`pending: ${st.pause.question.split("\n")[0]}`] : []),
+        ...(() => {
+          const sp = led.spec();
+          if (!cfg.specTests || !resolveVerify(cfg.verify, ctx.cwd)) return [];
+          if (!sp) return [`spec tests: not written yet (/${cmd("tests")})`];
+          if (sp.status === "skipped") return [`spec tests: skipped (${sp.reason})`];
+          const ts = loaded.ok ? loaded.tasks.filter((t) => t.status !== "dropped") : [];
+          const by = (k: string) => ts.filter((t) => specState(sp, t) === k).map((t) => t.id);
+          const parts = [`${by("ok").length} task(s) covered`, ...(["skipped", "stale", "missing"] as const).filter((k) => by(k).length).map((k) => `${k}: ${by(k).join(", ")}`)];
+          return [`spec tests: ${parts.join(" · ")}`];
+        })(),
         ...(led.checkpoints().some((c) => c.task) ? [`checkpoints: ${led.checkpoints().filter((c) => c.task).length} rounds · /${cmd("undo")} to go back`] : []),
         `next: ${phaseNext[st.phase]}`,
         `ledger: ${led.rel("")} · help: /${cmd("help")}`,
       ];
       ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /* -------------------------------- tests -------------------------------- */
+
+  pi.registerCommand(cmd("tests"), {
+    description: "Write acceptance tests from the spec before the build (fresh tester, you review). /wf:tests T3 <change> · /wf:tests skip [T2] <why>",
+    handler: async (args, ctx) => {
+      if (busy || !requireIdle(ctx)) return busy ? ctx.ui.notify("A build or review is running. Stop it first (Esc).", "warning") : undefined;
+      const led = new Ledger(ctx.cwd);
+      const st = requireScope(ctx, led);
+      if (!st) return;
+      const loaded = led.tasks();
+      if (!loaded.ok) return ctx.ui.notify(`${loaded.error}. Run /${cmd("plan")} first.`, "warning");
+      const tasks = loaded.tasks;
+      const cfg = led.config();
+      if (!resolveVerify(cfg.verify, ctx.cwd)) return ctx.ui.notify(`Spec tests need a verify command: set "verify" in ${led.rel("config.json")}.`, "warning");
+      const spec: Spec = led.spec()?.status === "written" ? led.spec()! : { status: "written", tasks: {} };
+      const isTask = (w?: string) => !!w && tasks.some((t) => t.id.toLowerCase() === w.toLowerCase());
+      const byId = (w: string) => tasks.find((t) => t.id.toLowerCase() === w.toLowerCase())!;
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const saveIndex = () => {
+        led.saveSpec(spec);
+        led.write("spec/index.md", renderIndex(spec, tasks));
+      };
+
+      // Skipping: the whole feature, or one task.
+      if (words[0]?.toLowerCase() === "skip") {
+        if (isTask(words[1])) {
+          const t = byId(words[1]);
+          const why = words.slice(2).join(" ") || "skipped by the human";
+          removeParked(ctx.cwd, t.id);
+          spec.tasks[t.id] = { files: [], tests: [], skip: why, hash: taskHash(t), at: now() };
+          saveIndex();
+          led.recordDecision(`No spec tests for ${t.id}: ${why}.`);
+          return post(`**${t.id} will be built without spec tests** (${why}).\n\n${tip("tests.done")}`);
+        }
+        const why = words.slice(1).join(" ") || "no reason given";
+        led.saveSpec({ status: "skipped", reason: why, tasks: {} });
+        led.recordDecision(`Build without spec tests: ${why}.`);
+        return post(`**This feature will be built without spec tests** (${why}). Workers write their own tests; the reviewer is told.\n\nNext: \`/${cmd("build")}\``);
+      }
+
+      // Which tasks: one named task (always rewritten), or every open task without current tests.
+      let targets: Task[];
+      let guidance = args.trim();
+      if (isTask(words[0])) {
+        targets = [byId(words[0])];
+        guidance = words.slice(1).join(" ");
+      } else {
+        targets = tasks.filter((t) => t.status !== "done" && t.status !== "dropped" && ["missing", "stale"].includes(specState(spec, t)));
+      }
+      if (!targets.length) return ctx.ui.notify(`Every open task already has current spec tests (or is skipped). /${cmd("tests")} <task> <change> rewrites one.`, "info");
+      if (guidance) led.recordDecision(`Spec tests (${targets.map((t) => t.id).join(", ")}): ${guidance}`);
+
+      const previous: Record<string, { rel: string; content: string }[]> = {};
+      for (const t of targets) {
+        previous[t.id] = parkedFiles(ctx.cwd, t.id).map((rel) => ({ rel, content: readParked(ctx.cwd, t.id, rel) }));
+        removeParked(ctx.cwd, t.id);
+      }
+
+      const abort = new AbortController();
+      const unsubEsc =
+        ctx.mode === "tui" ? ctx.ui.onTerminalInput((d) => (d === "\x1b" ? (abort.abort(), { consume: true }) : undefined)) : undefined;
+      let activity = "";
+      const render = () =>
+        ctx.ui.setWidget("wf", [`wf tests — writing spec tests for ${targets.map((t) => t.id).join(", ")}   (Esc to stop)`, ...(activity ? [`  ↳ ${activity}`] : [])]);
+      const pre = cfg.checkpoints ? snapshot(ctx.cwd, "wf: before tester") : undefined;
+      busy = true;
+      let res;
+      try {
+        render();
+        res = await runFresh({
+          cwd: ctx.cwd,
+          role: "tester",
+          systemPrompt: TESTER_SYSTEM,
+          brief: testerBrief(led, cfg, tasks, targets, guidance, previous),
+          prompt: `Carry out the brief in the attached file: write spec tests for ${targets.map((t) => t.id).join(", ")}. End with the wf-tests block.`,
+          tools: [...READ_ONLY, "write"],
+          model: roleModel(ctx, cfg, "tester"),
+          thinking: roleThinking(ctx, cfg, "tester"),
+          childExtensions: cfg.childExtensions,
+          signal: abort.signal,
+          onActivity: (a) => {
+            activity = a;
+            render();
+          },
+        });
+      } finally {
+        busy = false;
+        unsubEsc?.();
+        ctx.ui.setWidget("wf", undefined);
+      }
+      st.costTotal += res.cost;
+      led.saveState(st);
+
+      // The tester may only write parked files: undo anything it wrote in the repo itself.
+      const problems: string[] = [];
+      const post2 = pre ? snapshot(ctx.cwd, "wf: after tester") : undefined;
+      if (pre && post2 && pre.tree !== post2.tree) {
+        const stray = changedPaths(ctx.cwd, pre.commit, post2.commit);
+        restore(ctx.cwd, post2.commit, pre.commit, stray);
+        problems.push(`The tester wrote outside ${led.rel("spec")} (reverted): ${stray.join(", ")}`);
+      }
+      if (res.aborted) return ctx.ui.notify("Stopped. Tests written so far are kept; run /wf:tests again to finish.", "info");
+
+      const out = extractJson<{ tasks?: { id?: string; tests?: string[]; skip?: string | null }[]; assumptions?: string[]; spec_gaps?: string[] }>(res.text, "wf-tests");
+      for (const t of targets) {
+        const reported = out?.tasks?.find((x) => x.id === t.id);
+        const oldFiles = new Set(spec.tasks[t.id]?.files ?? []);
+        const files = parkedFiles(ctx.cwd, t.id).filter((rel) => {
+          // Spec tests must be new files: overwriting an existing file would clobber other work.
+          if (!oldFiles.has(rel) && fs.existsSync(path.join(ctx.cwd, rel))) {
+            removeParked(ctx.cwd, t.id, rel);
+            problems.push(`${t.id}: ${rel} already exists in the repo; spec tests must be new files (dropped)`);
+            return false;
+          }
+          return true;
+        });
+        // A rewritten task that was already under way: remove repo copies of tests that no longer exist.
+        if (t.status === "doing") for (const rel of oldFiles) if (!files.includes(rel)) fs.rmSync(path.join(ctx.cwd, rel), { force: true });
+        if (files.length) spec.tasks[t.id] = { files, tests: (reported?.tests ?? []).filter(Boolean), hash: taskHash(t), at: now() };
+        else if (reported?.skip) spec.tasks[t.id] = { files: [], tests: [], skip: reported.skip, hash: taskHash(t), at: now() };
+        else {
+          delete spec.tasks[t.id];
+          problems.push(`${t.id}: no tests written${out ? "" : " (the tester produced no report)"}`);
+        }
+      }
+      spec.gaps = (out?.spec_gaps ?? []).filter(Boolean);
+      spec.assumptions = (out?.assumptions ?? []).filter(Boolean);
+      saveIndex();
+      if (spec.assumptions.length) led.append("assumptions.md", spec.assumptions.map((a) => `- tests: ${a}\n`).join(""));
+
+      const lines = targets.map((t) => {
+        const x = spec.tasks[t.id];
+        if (!x) return `- **${t.id}**: no tests`;
+        if (x.skip) return `- **${t.id}**: no spec tests (${x.skip})`;
+        return `- **${t.id}**: ${x.files.map((f) => `\`${f}\``).join(", ")}${x.tests.length ? `\n${x.tests.map((d) => `  - ${d}`).join("\n")}` : ""}`;
+      });
+      post(
+        [
+          `**Spec tests written** (parked in \`${led.rel("spec")}/\`, not in your code yet)`,
+          "",
+          ...lines,
+          spec.gaps.length ? `\n**Gaps in the spec** (the tester had to guess; decide these):\n${spec.gaps.map((g) => `- ${g}`).join("\n")}` : "",
+          spec.assumptions.length ? `\n**Tester's assumptions:**\n${spec.assumptions.map((a) => `- ${a}`).join("\n")}` : "",
+          problems.length ? `\n⚠ ${problems.join("\n⚠ ")}` : "",
+          "",
+          tip("tests.done"),
+        ]
+          .filter((l) => l !== "")
+          .join("\n"),
+      );
     },
   });
 

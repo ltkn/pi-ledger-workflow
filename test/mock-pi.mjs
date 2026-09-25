@@ -25,9 +25,27 @@ if (sys.includes("MANAGER")) {
     const delta = [{ id: "T3", detail: "patched by manager" }];
     say("ok\n```wf-manage\n" + JSON.stringify({ tasks: delta, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
   }
+} else if (sys.includes("TESTER")) {
+  // T1 gets a parked test; T2 is skipped; T3's file collides with an existing one; one stray write outside the spec dir.
+  const ids = [...brief.split("## Write tests for")[1].split("\n## ")[0].matchAll(/^### (\w+):/gm)].map((m) => m[1]);
+  const park = (id, rel, text) => {
+    fs.mkdirSync(`.pi/wf/spec/${id}/${rel.split("/").slice(0, -1).join("/")}`, { recursive: true });
+    fs.writeFileSync(`.pi/wf/spec/${id}/${rel}`, text);
+  };
+  if (ids.includes("T1")) park("T1", "tests/t1_spec_test.py", "def test_t1():\n    assert True\n");
+  if (ids.includes("T3")) park("T3", "README", "clobber");
+  fs.writeFileSync("stray.txt", "x");
+  const tasks = ids.map((id) => (id === "T2" ? { id, tests: [], skip: "pure rename" } : { id, tests: [`test_${id.toLowerCase()}: checks ${id}`], skip: null }));
+  say("```wf-tests\n" + JSON.stringify({ tasks, assumptions: [], spec_gaps: ["Is cancelling twice an error?"] }) + "\n```");
 } else if (sys.includes("WORKER")) {
   const done = (id) => say("```wf-report\n" + JSON.stringify({ status: "done", summary: `did ${id}` }) + "\n```");
-  if (scenario === "revert") {
+  if (scenario === "spec") {
+    // T1's worker tries to edit its spec test: the harness must restore it.
+    const id = brief.match(/task (\w+):/)[1];
+    if (id === "T1" && fs.existsSync("tests/t1_spec_test.py")) fs.appendFileSync("tests/t1_spec_test.py", "# weakened\n");
+    fs.writeFileSync(`${id}.txt`, "x");
+    done(id);
+  } else if (scenario === "revert") {
     // T2's first attempt wipes T1's file, like a stray `git checkout .`/`git stash` would.
     const id = brief.match(/task (\w+):/)[1];
     if (id === "T2" && !fs.existsSync("T2.txt")) fs.rmSync("T1.txt", { force: true });

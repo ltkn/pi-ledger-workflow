@@ -23,6 +23,7 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   const posts: string[] = [];
   const answers: string[] = [];
   const confirms: boolean[] = [];
+  const selects: string[] = [];
   wf({
     registerCommand: (n: string, o: any) => (cmds[n] = o),
     sendMessage: (m: any) => m.display && posts.push(m.content),
@@ -30,6 +31,7 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   const ctx: any = {
     cwd: repo, mode: "print", hasUI: true, isIdle: () => true, model: { provider: "p", id: "m" }, thinkingLevel: "low",
     ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {}, confirm: async () => confirms.shift() ?? true,
+      select: async (_t: string, opts: string[]) => selects.shift() ?? opts[0],
       input: async () => answers.shift() ?? "", onTerminalInput: () => () => {} },
   };
   const run = async (name: string, args = "") => cmds[`wf:${name}`].handler(args, ctx);
@@ -40,12 +42,12 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
     fs.writeFileSync(".pi/wf/plan.md", plan);
     fs.writeFileSync(".pi/wf/tasks.json", JSON.stringify({ tasks }));
   };
-  return { cmds, posts, answers, confirms, repo, run, read, init };
+  return { cmds, posts, answers, confirms, selects, repo, run, read, init };
 }
 
-test("registers the seven commands", () => {
+test("registers the eight commands", () => {
   const { cmds } = setup("happy", {}, []);
-  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status", "wf:undo"]);
+  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status", "wf:tests", "wf:undo"]);
 });
 
 test("/wf:help lists topics and shows one", async () => {
@@ -79,7 +81,7 @@ test("attempt limit: guidance resets the counter, plain /wf:build asks for an an
 });
 
 test("happy path: question pause, answer, summarizer, completion, review follow-ups", async () => {
-  const t = setup("happy", { verify: "test -f T1.txt" }, [{ id: "T1", title: "domain" }, { id: "T2", title: "endpoint" }, { id: "T3", title: "tests" }], "plan ASK_MANAGER");
+  const t = setup("happy", { verify: "test -f T1.txt", specTests: false }, [{ id: "T1", title: "domain" }, { id: "T2", title: "endpoint" }, { id: "T3", title: "tests" }], "plan ASK_MANAGER");
   await t.init();
 
   await t.run("build"); // manager asks; empty inline answer → pause
@@ -106,7 +108,7 @@ test("happy path: question pause, answer, summarizer, completion, review follow-
 });
 
 test("failing verification vetoes 'done', creates a fix task, and the stall guard stops the loop", async () => {
-  const t = setup("failing", { verify: "echo '[ERROR] OrderTest expected PENDING'; exit 1", questions: "assume" }, [{ id: "T1", title: "a" }]);
+  const t = setup("failing", { verify: "echo '[ERROR] OrderTest expected PENDING'; exit 1", questions: "assume", specTests: false }, [{ id: "T1", title: "a" }]);
   await t.init();
   await t.run("build");
   const out = t.posts.at(-1)!;
@@ -208,4 +210,41 @@ test("/wf:undo restores files and tasks, and can be undone", async () => {
   await t.run("undo", "u1"); // back to where we were
   assert.ok(fs.existsSync(path.join(t.repo, "T3.txt")));
   assert.equal(JSON.parse(t.read("tasks.json")).tasks[2].status, "done");
+});
+
+test("spec tests: written parked, activated with the task, restored after a worker edits them", async () => {
+  const t = setup("spec", { verify: "true" }, [{ id: "T1", title: "a" }, { id: "T2", title: "b" }, { id: "T3", title: "c" }]);
+  await t.init();
+  await t.run("tests");
+  const spec = JSON.parse(t.read("spec.json"));
+  assert.deepEqual(spec.tasks.T1.files, ["tests/t1_spec_test.py"]);
+  assert.equal(spec.tasks.T2.skip, "pure rename");
+  assert.equal(spec.tasks.T3, undefined); // README exists in the repo: dropped
+  const out = t.posts.at(-1)!;
+  assert.match(out, /Gaps in the spec[\s\S]*cancelling twice/);
+  assert.match(out, /T3: README already exists/);
+  assert.match(out, /wrote outside[\s\S]*stray\.txt/);
+  assert.ok(!fs.existsSync(path.join(t.repo, "stray.txt"))); // reverted
+  assert.ok(!fs.existsSync(path.join(t.repo, "tests/t1_spec_test.py"))); // parked, not in the code yet
+  assert.match(t.read("spec/index.md"), /## T1[\s\S]*tests\/t1_spec_test\.py/);
+
+  await t.run("build");
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  assert.equal(fs.readFileSync(path.join(t.repo, "tests/t1_spec_test.py"), "utf8"), "def test_t1():\n    assert True\n"); // restored
+  assert.match(t.read("log.md"), /Notices: spec tests edited or removed by the worker, restored: tests\/t1_spec_test\.py/);
+});
+
+test("spec tests: never skipped silently", async () => {
+  const t = setup("spec", { verify: "true" }, [{ id: "T1", title: "a" }]);
+  await t.init();
+  await t.run("build"); // default choice: stop and write them first
+  assert.match(t.posts.at(-1)!, /\/wf:tests/);
+  assert.equal(JSON.parse(t.read("state.json")).roundsTotal, 0);
+
+  t.selects.push("Build without spec tests for this feature");
+  t.answers.push("spike");
+  await t.run("build");
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  assert.deepEqual(JSON.parse(t.read("spec.json")), { status: "skipped", reason: "spike", tasks: {} });
+  assert.match(t.read("decisions.md"), /Build without spec tests: spike/);
 });
