@@ -68,6 +68,60 @@ export interface Checkpoint {
   summary?: string;
 }
 
+/* ------------------------------ stats events ------------------------------ */
+
+/** One fresh model call (manager, worker, summarizer, reviewer, tester). */
+export interface CallEvent {
+  type: "call";
+  at: string;
+  role: string;
+  model?: string;
+  thinking?: string;
+  round?: number;
+  task?: string;
+  cost: number;
+  ms: number;
+  turns: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** the largest prompt a single turn sent: how full the context got */
+  peakContext: number;
+  /** manager only: did it produce a parseable decision */
+  decided?: boolean;
+}
+
+/** One worker round, as the harness saw it. */
+export interface RoundEvent {
+  type: "round";
+  at: string;
+  round: number;
+  task: string;
+  attempt: number;
+  status: string;
+  /** "salvaged": the summarizer rebuilt the report; "lost": not even that */
+  report: "ok" | "salvaged" | "lost";
+  verify: boolean | null;
+  changed: boolean;
+  files?: number;
+  added?: number;
+  removed?: number;
+  flags: string[];
+  notices: string[];
+  taskDone: boolean;
+}
+
+export type WfEvent =
+  | CallEvent
+  | RoundEvent
+  | { type: "question"; at: string; from: string; kind?: string; task?: string; answered: boolean }
+  | { type: "veto"; at: string; round: number; reason: string }
+  | { type: "build-end"; at: string; outcome: string }
+  | { type: "undo"; at: string; to: string; rounds: string[] }
+  | { type: "review"; at: string; verdict: string; followups: number }
+  | { type: "tests"; at: string; covered: number; skipped: number; gaps: number; problems: number };
+
 /** What the harness itself saw in the last round (the manager's ground truth next to the worker's report). */
 export interface RoundRecord {
   round: number;
@@ -235,6 +289,11 @@ export class Ledger {
       return [];
     }
   }
+  /** Append a stats event (.pi/wf/events.jsonl, archived with the feature). */
+  event(e: WfEvent): void {
+    this.append("events.jsonl", `${JSON.stringify(e)}\n`);
+  }
+
   /** undefined until /wf:tests ran or the human chose to build without spec tests */
   spec(): import("./spec.ts").Spec | undefined {
     try {

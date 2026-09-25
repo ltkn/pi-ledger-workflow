@@ -137,6 +137,8 @@ Steering blind usually costs more rounds than it saves. Two minutes with these
 usually tells you what's going on:
 
 - **`/wf:status`**: task states, whether tests pass, any pending question.
+- **`/wf:stats`**: rounds per task, salvaged reports, flags, and how full each
+  role's context got.
 - **`.pi/wf/log.md`**: one entry per round, with the manager's reasoning, the
   worker's summary, and the first line of the test result. Read the last few
   rounds of the stuck task and you'll usually see the pattern.
@@ -352,6 +354,34 @@ a question. Pair it with a larger `maxRounds` for long runs.
   settings you want committed.
 - **Start from a clean tree**: uncommitted changes from before `/wf:scope`
   end up in the review diff.
+<!-- /wf -->
+
+<!-- wf:topic stats -->
+## Is it working? `/wf:stats`
+
+`/wf:stats` shows a card for the current feature:
+
+- **Tasks and rounds**: how many rounds each finished task took, how many were
+  done on the first try, and which task took the most.
+- **Reliability**: worker reports that had to be salvaged (or were lost), and
+  manager rounds that produced no usable decision. With a smaller model, these
+  are the first numbers to watch.
+- **Tests, flags and you**: rounds with failing tests, vetoed finishes, lost
+  work, changed tests, undos, questions and stops.
+- **Tokens and context per role**: calls, **peak context** (the largest prompt
+  a single call sent, i.e. how full that model's context got), the average peak,
+  prompt and output tokens, the share served from cache, cost, time and model.
+  If a worker's peak gets close to your model's context window, ask `/wf:plan`
+  for smaller tasks or give the model more context.
+
+Only the fresh calls wf makes are counted; your own main session (scope, plan,
+chat) isn't.
+
+`/wf:stats all` puts every feature in one table, grouped by the worker model
+(with the manager model on the group line and an average row), so you can
+compare setups on your own work: rounds per task, first-try rate, salvaged
+reports, flags, review verdict, worker peak context, tokens, cost and time.
+Features built before stats existed aren't shown.
 <!-- /wf -->
 
 <!-- wf:topic rules -->

@@ -6,7 +6,7 @@ const sys = fs.readFileSync(argv[argv.indexOf("--append-system-prompt") + 1], "u
 const brief = fs.readFileSync(argv.find((a) => a.startsWith("@")).slice(1), "utf8");
 const scenario = process.env.MOCK_SCENARIO;
 const say = (text) =>
-  console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", usage: { cost: { total: 0.001 } },
+  console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", usage: { input: 1200, output: 150, cacheRead: 800, cacheWrite: 0, cost: { total: 0.001 } },
     content: [{ type: "toolCall", name: "read", arguments: { path: "x" } }, { type: "text", text }] } }));
 const tasksIn = () => JSON.parse(brief.match(/## tasks.json\n\n([\s\S]*?)\n## /)[1]).tasks;
 

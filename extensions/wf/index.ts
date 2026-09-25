@@ -7,6 +7,7 @@
  *   /wf:build [answer]    manager → worker → verify    (fresh contexts, automatic)
  *   /wf:review [focus]    independent review           (fresh context)
  *   /wf:status            where things stand
+ *   /wf:stats [all]       numbers for this feature, or every feature by model
  *   /wf:undo [id]         restore the working tree to before a build round
  *   /wf:help [topic]      what to do next, and how to handle edge cases
  *
@@ -56,6 +57,7 @@ import {
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
 import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
 import { type Spec, parkedFiles, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
+import { loadAll, loadFeature, renderAll, renderCard } from "./stats.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
 const cmd = (verb: string) => `${PREFIX}:${verb}`;
@@ -85,6 +87,17 @@ export default function wf(pi: ExtensionAPI) {
     post(marker);
     pi.sendMessage({ customType: "wf-instruction", content: prompt, display: false }, { triggerTurn: true });
   };
+
+  /** Stats: record one fresh call. */
+  const recordCall = (
+    led: LedgerT,
+    role: string,
+    res: { cost: number; ms: number; turns: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; peakContext: number } },
+    model: string | undefined,
+    thinking: string | undefined,
+    extra: { round?: number; task?: string; decided?: boolean } = {},
+  ) =>
+    led.event({ type: "call", at: now(), role, model, thinking, cost: res.cost, ms: res.ms, turns: res.turns, ...res.tokens, ...extra });
 
   const sessionModel = (ctx: ExtensionCommandContext) => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
   const roleModel = (ctx: ExtensionCommandContext, cfg: Config, role: keyof Config["models"]) => cfg.models[role] ?? sessionModel(ctx);
@@ -261,6 +274,7 @@ export default function wf(pi: ExtensionAPI) {
       const askHuman = async (question: string, from: Pause["from"], task?: string, kind?: Pause["kind"]): Promise<boolean> => {
         post(`**wf needs a decision** (${from}${task ? `, ${task}` : ""})\n\n${question}`);
         const a = ctx.hasUI ? await ctx.ui.input("Answer now (empty = pause and discuss)", "") : undefined;
+        led.event({ type: "question", at: now(), from, kind, task, answered: !!a?.trim() });
         if (a?.trim()) {
           led.recordDecision(`Q (${from}${task ? `, ${task}` : ""}): ${question}\nA: ${a.trim()}`);
           return true;
@@ -384,6 +398,7 @@ export default function wf(pi: ExtensionAPI) {
             break;
           }
           const dec = extractJson<ManageDecision>(mres.text, "wf-manage");
+          recordCall(led, "manager", mres, roleModel(ctx, cfg, "manager"), roleThinking(ctx, cfg, "manager"), { round: st.roundsTotal, decided: !!dec });
           if (!dec) {
             // Paper: "none named → first unfinished task".
             led.append("log.md", `\n### Round ${st.roundsTotal} (${now()}) — manager produced no decision${mres.error ? `: ${cap(mres.error, 300)}` : ""}; falling back to first unfinished task\n`);
@@ -417,7 +432,9 @@ export default function wf(pi: ExtensionAPI) {
               outcomeNote = "every task is marked done but nothing changed on disk.";
               break;
             }
-            led.append("log.md", `\n### Round ${st.roundsTotal} — finish vetoed (${st.lastVerify?.ok === false ? "verification failing" : "unfinished tasks"})\n`);
+            const vetoReason = st.lastVerify?.ok === false ? "verification failing" : "unfinished tasks";
+            led.append("log.md", `\n### Round ${st.roundsTotal} — finish vetoed (${vetoReason})\n`);
+            led.event({ type: "veto", at: now(), round: st.roundsTotal, reason: vetoReason });
           }
           if (!next) next = st.lastVerify?.ok === false ? ensureFixTask() : firstUnfinished();
           if (!next) {
@@ -483,6 +500,8 @@ export default function wf(pi: ExtensionAPI) {
             break;
           }
 
+          recordCall(led, "worker", wres, roleModel(ctx, cfg, "worker"), roleThinking(ctx, cfg, "worker"), { round: n, task: next.id });
+          let reportSource: "ok" | "salvaged" | "lost" = "ok";
           let report = extractJson<WorkerReport>(wres.text, "wf-report");
           let notes = extractBlock(wres.text, "wf-notes") ?? report?.notes;
           if (!report) {
@@ -501,7 +520,9 @@ export default function wf(pi: ExtensionAPI) {
               signal: abort.signal,
             });
             addCost(sres.cost);
+            recordCall(led, "summarizer", sres, roleModel(ctx, cfg, "worker"), "low", { round: n, task: next.id });
             const salvaged = extractJson<WorkerReport>(sres.text, "wf-report");
+            reportSource = salvaged ? "salvaged" : "lost";
             // The summarizer never sees tool results, so it can't know the task is complete.
             report = salvaged
               ? { ...salvaged, status: "partial" }
@@ -568,6 +589,7 @@ export default function wf(pi: ExtensionAPI) {
             st.lastVerify = { ok: null, command: null, summary: "No verify command configured.", at: now() };
           }
 
+          const roundStats: { files?: number; added?: number; removed?: number } = {};
           // A flagged round can't complete its task, whatever the report says.
           if (report.status === "done" && st.lastVerify?.ok !== false && !flags.length) next.status = "done";
           st.lastReport = { ...report, task: next.id, changed: lastRoundChanged };
@@ -579,7 +601,23 @@ export default function wf(pi: ExtensionAPI) {
             const v = st.lastVerify?.ok === true ? "✓" : st.lastVerify?.ok === false ? "✗" : "–";
             entry.summary = `${next.id} ${report.status} · ${d.files} files +${d.added} −${d.removed} · verify ${v}${flags.length ? " · ⚑ " + flags.map((f) => f.kind).join(", ") : ""} · ${cap(report.summary.replace(/\s+/g, " "), 60)}`;
             led.saveCheckpoints(cps);
+            Object.assign(roundStats, { files: d.files, added: d.added, removed: d.removed });
           } else st.lastRound = undefined;
+          led.event({
+            type: "round",
+            at: now(),
+            round: n,
+            task: next.id,
+            attempt: next.attempts ?? 1,
+            status: report.status,
+            report: reportSource,
+            verify: st.lastVerify?.ok ?? null,
+            changed: lastRoundChanged,
+            ...roundStats,
+            flags: flags.map((f) => `${f.kind}: ${f.detail}`),
+            notices,
+            taskDone: next.status === "done",
+          });
           lastPicked = next.id;
           led.saveTasks(tasks);
 
@@ -630,6 +668,8 @@ export default function wf(pi: ExtensionAPI) {
         ctx.ui.setWidget("wf", undefined);
         ctx.ui.setStatus("wf", undefined);
       }
+
+      led.event({ type: "build-end", at: now(), outcome });
 
       /* ---- wrap up: harness-written handoff (the paper's finalizer role, without a model call) ---- */
       if (outcome === "stalled") st.pause = { question: `Build stalled: ${outcomeNote}\nLast report: ${st.lastReport?.summary ?? ""}`, from: "harness" };
@@ -721,6 +761,7 @@ export default function wf(pi: ExtensionAPI) {
             render();
           },
         });
+        recordCall(led, "reviewer", res, roleModel(ctx, cfg, "reviewer"), roleThinking(ctx, cfg, "reviewer"));
         if (res.aborted) return ctx.ui.notify("Review stopped.", "info");
         if (!res.text.trim()) return ctx.ui.notify(`Reviewer produced no output${res.error ? `: ${cap(res.error, 300)}` : ""}`, "error");
 
@@ -738,6 +779,7 @@ export default function wf(pi: ExtensionAPI) {
           });
           led.saveTasks([...tasks, ...added]);
         }
+        led.event({ type: "review", at: now(), verdict: verdict?.verdict ?? "none", followups: added.length });
         st.phase = added.length ? "planned" : "reviewed";
         led.saveState(st);
 
@@ -894,6 +936,7 @@ export default function wf(pi: ExtensionAPI) {
       }
       st.costTotal += res.cost;
       led.saveState(st);
+      recordCall(led, "tester", res, roleModel(ctx, cfg, "tester"), roleThinking(ctx, cfg, "tester"));
 
       // The tester may only write parked files: undo anything it wrote in the repo itself.
       const problems: string[] = [];
@@ -931,6 +974,14 @@ export default function wf(pi: ExtensionAPI) {
       spec.assumptions = (out?.assumptions ?? []).filter(Boolean);
       saveIndex();
       if (spec.assumptions.length) led.append("assumptions.md", spec.assumptions.map((a) => `- tests: ${a}\n`).join(""));
+      led.event({
+        type: "tests",
+        at: now(),
+        covered: targets.filter((t) => spec.tasks[t.id]?.files.length).length,
+        skipped: targets.filter((t) => spec.tasks[t.id]?.skip).length,
+        gaps: spec.gaps.length,
+        problems: problems.length,
+      });
 
       const lines = targets.map((t) => {
         const x = spec.tasks[t.id];
@@ -1037,6 +1088,7 @@ export default function wf(pi: ExtensionAPI) {
 
       const what = undone.length ? `undid ${undone.join(", ")}` : `restored ${target.id}`;
       led.append("log.md", `\n### Undo (${now()}) — back to before ${target.id}: ${what}${reason ? ` — ${reason}` : ""}\n`);
+      led.event({ type: "undo", at: now(), to: target.id, rounds: undone });
       if (undone.length) {
         led.recordDecision(`The human undid rounds ${undone.join(", ")} (code and task list restored to before ${target.id})${reason ? `: ${reason}` : ""}.`);
         st.lastReport = { task: target.task ?? "", status: "partial", summary: `The human undid rounds ${undone.join(", ")}.`, changed: true };
@@ -1055,6 +1107,23 @@ export default function wf(pi: ExtensionAPI) {
           tip("undo.done", { id: undoEntry.id }),
         ].join("\n"),
       );
+    },
+  });
+
+  /* -------------------------------- stats -------------------------------- */
+
+  pi.registerCommand(cmd("stats"), {
+    description: "Numbers for this feature (rounds, reliability, flags, tokens and context per role); /wf:stats all compares every feature by model",
+    handler: async (args, ctx) => {
+      if (args.trim().toLowerCase() === "all") {
+        const { features, skipped } = loadAll(ctx.cwd);
+        return post(`**wf stats — all features, grouped by worker model**\n\n${renderAll(features, skipped)}`);
+      }
+      const led = new Ledger(ctx.cwd);
+      if (!requireScope(ctx, led)) return;
+      const f = loadFeature(led.root);
+      if (!f) return ctx.ui.notify("No stats for this feature: it was started before stats existed.", "info");
+      post(renderCard(f));
     },
   });
 

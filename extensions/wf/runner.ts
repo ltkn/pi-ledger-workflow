@@ -31,6 +31,10 @@ export interface RunResult {
   exitCode: number;
   cost: number;
   turns: number;
+  /** token usage summed over all turns; peakContext = the largest prompt one turn sent (how full the context got) */
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; peakContext: number };
+  /** wall-clock duration of the call */
+  ms: number;
   /** compact transcript (assistant text + tool calls), for the cut-off summarizer */
   transcript: string;
   aborted: boolean;
@@ -71,7 +75,17 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
   else args.push("--tools", o.tools.join(","));
   args.push("--append-system-prompt", sysFile, `@${briefFile}`, o.prompt ?? "Carry out the brief in the attached file.");
 
-  const res: RunResult = { text: "", exitCode: 0, cost: 0, turns: 0, transcript: "", aborted: false };
+  const started = Date.now();
+  const res: RunResult = {
+    text: "",
+    exitCode: 0,
+    cost: 0,
+    turns: 0,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, peakContext: 0 },
+    ms: 0,
+    transcript: "",
+    aborted: false,
+  };
   const transcript: string[] = [];
 
   try {
@@ -93,6 +107,13 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
         const m = ev.message;
         res.turns++;
         res.cost += m.usage?.cost?.total ?? 0;
+        const u = m.usage ?? {};
+        const t = res.tokens;
+        t.input += u.input ?? 0;
+        t.output += u.output ?? 0;
+        t.cacheRead += u.cacheRead ?? 0;
+        t.cacheWrite += u.cacheWrite ?? 0;
+        t.peakContext = Math.max(t.peakContext, (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0));
         if (m.stopReason) res.stopReason = m.stopReason;
         if (m.errorMessage) res.error = m.errorMessage;
         const texts: string[] = [];
@@ -143,6 +164,7 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
     await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
   res.transcript = transcript.join("\n");
+  res.ms = Date.now() - started;
   return res;
 }
 

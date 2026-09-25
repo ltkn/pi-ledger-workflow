@@ -16,13 +16,14 @@ see [Credits](#credits).
 /wf:build [answer]    manager → worker → verify, repeated   fresh contexts · automatic
 /wf:review [focus]    independent review of the diff        fresh context
 /wf:status            where things stand
+/wf:stats [all]       rounds, reliability, tokens/context per role; all = compare by model
 /wf:undo [round]      go back to before a build round (picked from a list)
 /wf:help [topic]      what to do next, and how to handle edge cases
 ```
 
 `wf` = workflow. The `name:verb` form mirrors Pi's own `/skill:name`, can't
 collide with built-ins or other extensions' `/plan`, and typing `/wf` lists
-all eight commands.
+all nine commands.
 
 **Day-to-day guide:** [`workflow-help.md`](extensions/wf/workflow-help.md)
 covers the normal path and what to do when a task keeps failing, the build
@@ -122,6 +123,7 @@ Press **Esc** during build or review to stop; `/wf:build` resumes.
 | `log.md` | harness, per round | manager (last 4), you |
 | `review.md` | `/wf:review` | you |
 | `checkpoints.json` | harness, per round | `/wf:undo` |
+| `events.jsonl` | harness: every fresh call and round, as data | `/wf:stats` |
 | `spec/`, `spec.json` | `/wf:tests` (parked acceptance tests + index) | you, workers (their task's), manager, reviewer |
 | `state.json`, `config.json` | harness | — |
 
@@ -216,7 +218,8 @@ Settings that matter for a local model:
 Each round is two model calls (manager + worker) plus the test run; the paper
 measured roughly 3× the tokens of a single call. Cost per run and per feature
 is shown at the end of each build and in `/wf:status`, as reported by the
-provider (zero for local models).
+provider (zero for local models). `/wf:stats` breaks tokens, peak context, cost
+and time down per role, and `/wf:stats all` compares features by model.
 
 ## Development
 

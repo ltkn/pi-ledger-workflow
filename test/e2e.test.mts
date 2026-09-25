@@ -45,9 +45,9 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   return { cmds, posts, answers, confirms, selects, repo, run, read, init };
 }
 
-test("registers the eight commands", () => {
+test("registers the nine commands", () => {
   const { cmds } = setup("happy", {}, []);
-  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status", "wf:tests", "wf:undo"]);
+  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:stats", "wf:status", "wf:tests", "wf:undo"]);
 });
 
 test("/wf:help lists topics and shows one", async () => {
@@ -247,4 +247,28 @@ test("spec tests: never skipped silently", async () => {
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
   assert.deepEqual(JSON.parse(t.read("spec.json")), { status: "skipped", reason: "spike", tasks: {} });
   assert.match(t.read("decisions.md"), /Build without spec tests: spike/);
+});
+
+test("/wf:stats: feature card with reliability and tokens per role; all features grouped by model", async () => {
+  const t = setup("happy", { verify: null }, [{ id: "T1", title: "domain" }, { id: "T2", title: "endpoint" }, { id: "T3", title: "tests" }]);
+  await t.init();
+  await t.run("build");
+  await t.run("review");
+  await t.run("stats");
+  const card = t.posts.at(-1)!;
+  if (process.env.SHOW_STATS) console.log(card);
+  assert.match(card, /Tasks +3 done of 4 · planned 3 · review \+1/);
+  assert.match(card, /Rounds +4 worker rounds · 1\.3 per done task · first try 2\/3 \(67%\) · most: T2 \(2\)/);
+  assert.match(card, /reports 3 ok, 1 salvaged, 0 lost · manager decisions missing 0\/\d+/);
+  assert.match(card, /Review +changes_needed \(1 R-tasks\)/);
+  assert.match(card, /\nworker +4 +2\.0k +2\.0k +8\.0k +600 +40%/); // 4 calls · peak 2.0k · prompt 4×2000 · output 4×150 · 800/2000 cached
+  assert.match(card, /\ntotal /);
+
+  await t.run("scope", "Next feature"); // archives the first one
+  await t.run("stats", "all");
+  const all = t.posts.at(-1)!;
+  if (process.env.SHOW_STATS) console.log(all);
+  assert.match(all, /── worker: p\/m · manager: p\/m · 1 feature\(s\)/);
+  assert.doesNotMatch(all, /older feature/); // the new, empty feature isn't "built before stats"
+  assert.match(all, /Add order cancellation +3\/4 +1\.3 +67% +1 +0 +changes \+1R/);
 });
