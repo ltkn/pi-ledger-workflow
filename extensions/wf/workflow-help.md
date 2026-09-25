@@ -60,8 +60,14 @@ acceptance tests for each task, before any code exists.
 - **Implementers can't change them.** Before every test run the build restores
   them from the parked copy. If a worker thinks one is wrong, it reports
   blocked, and the build asks you; only `/wf:tests` changes them.
-- **They're new files only.** The tester never edits your existing tests;
-  a file that would overwrite an existing one is dropped (you're told).
+- **They're new files only.** The tester never edits your existing tests: a
+  copy of an existing file would overwrite what the workers change in it, so
+  it's dropped (you're told). When the plan changes existing tests, the workers
+  make those edits, and the tester pins the new behaviour in a sibling file
+  named after it, e.g. `OrderRenderCompactHeaderSpecTest.java` next to
+  `OrderRenderTest.java`. After the feature, Spec files are ordinary tests:
+  a later feature that changes that behaviour updates them like any other test,
+  and writes its own, differently named Spec file.
 - **They go where your tests live.** The tester is told the project's test
   folders (e.g. `src/test/java/`), and `/wf:tests` warns about any file outside
   them: Maven, Gradle or pytest would never run it, and the gate would silently

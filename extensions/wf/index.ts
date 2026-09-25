@@ -920,6 +920,14 @@ export default function wf(pi: ExtensionAPI) {
 
   /* -------------------------------- tests -------------------------------- */
 
+  /** Where a spec test for an existing test file belongs: a sibling named after the behaviour it pins. */
+  const specSibling = (rel: string) => {
+    const ext = path.extname(rel);
+    const base = rel.slice(0, rel.length - ext.length);
+    if (/(^|\/)test_[^/]*$/.test(base) || /_test$/.test(base)) return `${base}_<behaviour>_spec${ext}`;
+    return /Test$/.test(base) ? `${base.replace(/Test$/, "<Behaviour>SpecTest")}${ext}` : `${base}.<behaviour>.spec${ext}`;
+  };
+
   pi.registerCommand(cmd("tests"), {
     description: "Write acceptance tests from the spec before the build (fresh tester, you review). /wf:tests T3 <change> · /wf:tests skip [T2] <why>",
     handler: async (args, ctx) => {
@@ -1034,7 +1042,9 @@ export default function wf(pi: ExtensionAPI) {
           // Spec tests must be new files: overwriting an existing file would clobber other work.
           if (!oldFiles.has(rel) && fs.existsSync(path.join(ctx.cwd, rel))) {
             removeParked(ctx.cwd, t.id, rel);
-            problems.push(`${t.id}: ${rel} already exists in the repo; spec tests must be new files (dropped)`);
+            problems.push(
+              `${t.id}: ${rel} already exists in the repo, so it was dropped (a copy would overwrite the workers' changes to it). Spec tests go in a new file next to it, e.g. ${specSibling(rel)}: /${cmd("tests")} ${t.id} to rewrite`,
+            );
             return false;
           }
           return true;

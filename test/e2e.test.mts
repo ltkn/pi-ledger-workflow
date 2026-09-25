@@ -247,7 +247,7 @@ test("spec tests: written parked, activated with the task, restored after a work
   assert.equal(spec.tasks.T3, undefined); // README exists in the repo: dropped
   const out = t.posts.at(-1)!;
   assert.match(out, /Gaps in the spec[\s\S]*cancelling twice/);
-  assert.match(out, /T3: README already exists/);
+  assert.match(out, /T3: README already exists in the repo, so it was dropped[^\n]*new file next to it[^\n]*\/wf:tests T3 to rewrite/);
   assert.match(out, /wrote outside[\s\S]*stray\.txt/);
   assert.ok(!fs.existsSync(path.join(t.repo, "stray.txt"))); // reverted
   assert.ok(!fs.existsSync(path.join(t.repo, "tests/t1_spec_test.py"))); // parked, not in the code yet

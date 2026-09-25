@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tester: when the plan changes existing tests, those edits stay with the workers and the acceptance checks go in a new sibling file named after the behaviour it pins (e.g. `OrderRenderTest` → `OrderRenderCompactHeaderSpecTest`), so later features don't collide with earlier Spec files; a dropped copy of an existing file now says why and where the test belongs instead
 - `/wf:tests` tells the tester where the project keeps its tests (e.g. `src/test/java/`, detected from the tracked test files) and warns about any spec test placed outside those folders, which the build would never run
 - Fix: finished features are archived to `.pi/wf-archive/` (which ignores itself in git) instead of `.pi/wf/archive/`, so fresh roles exploring the ledger no longer read old features' plans and spec tests; existing archives are moved automatically. Fresh roles are also told to ignore anything about other features
 - Comment rules for workers and the tester, checked by the reviewer, in any language (Javadoc, TSDoc, docstrings, SQL, config): brief, only what the code can't say (why, intent, constraints, non-obvious behaviour); no restating the code, no history or task ids, wrong comments updated or removed; API docs state the contract in a sentence or two; match the surrounding density
