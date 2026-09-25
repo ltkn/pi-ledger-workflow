@@ -388,3 +388,22 @@ test("an old .pi/wf/archive is moved out of the ledger", async () => {
   assert.ok(fs.existsSync(path.join(dir, ".pi/wf-archive/2026-01-01T00-00-00/state.json")));
   assert.equal(fs.readFileSync(path.join(dir, ".pi/wf-archive/.gitignore"), "utf8"), "*\n");
 });
+
+test("spec tests: the project's test folders are detected, and tests outside them are flagged", async () => {
+  const { testRoots, misplacedTests } = await import("../extensions/wf/spec.ts");
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "wf-roots-"));
+  for (const f of ["src/test/java/a/FooTest.java", "svc/src/test/java/x/BarTest.java", "tests/test_x.py", "pkg/foo_test.go", "src/main/java/a/Foo.java"]) {
+    fs.mkdirSync(path.join(repo, path.dirname(f)), { recursive: true });
+    fs.writeFileSync(path.join(repo, f), "x");
+  }
+  execSync("git init -q && git add . && git -c user.email=t@t -c user.name=t commit -qm init", { cwd: repo });
+  const roots = testRoots(repo);
+  assert.deepEqual(roots, ["src/test/java/", "svc/src/test/java/", "tests/"]);
+  assert.deepEqual(misplacedTests(roots, ["OrderTest.java", "src/test/java/a/NewTest.java", "tests/test_new.py"]), ["OrderTest.java"]);
+  assert.deepEqual(misplacedTests([], ["anything_test.go"]), []); // co-located tests: nothing to check against
+
+  const { testerBrief } = await import("../extensions/wf/prompts.ts");
+  const { DEFAULT_CONFIG } = await import("../extensions/wf/ledger.ts");
+  const brief = testerBrief({ read: () => "" } as any, DEFAULT_CONFIG, [], [], "", {}, roots);
+  assert.match(brief, /## Where this project keeps its tests\n\n- src\/test\/java\//);
+});

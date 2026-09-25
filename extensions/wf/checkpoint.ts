@@ -134,7 +134,7 @@ export function restore(cwd: string, from: string, to: string, paths: string[] =
 
 /* ------------------------------- detection ------------------------------- */
 
-const TEST_FILE =
+export const TEST_FILE =
   /(^|\/)(tests?|__tests__|specs?)\/|(^|\/)test_[^/]*\.py$|[._-](test|spec)\.[cm]?[jt]sx?$|_test\.(go|py|rb|exs?)$|Tests?\.(java|kt|kts|scala|cs|groovy|swift)$|Spec\.(scala|groovy|kt)$/i;
 const TEST_CASE =
   /@Test\b|@ParameterizedTest\b|@RepeatedTest\b|@TestFactory\b|^\s*(?:async\s+)?def\s+test_|^\s*(?:it|test)(?:\.each\([^)]*\))?\s*\(|#\[(?:tokio::)?test\]|^func\s+Test\w*\s*\(/gm;

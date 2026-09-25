@@ -61,7 +61,7 @@ import {
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
 import { ROLES, availableModels, contextWindow, findModel, modelLabel, validateModels } from "./models.ts";
 import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
-import { type Spec, parkedFiles, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
+import { type Spec, misplacedTests, parkedFiles, testRoots, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
 import { loadAll, loadFeature, renderAll, renderCard } from "./stats.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
@@ -984,6 +984,7 @@ export default function wf(pi: ExtensionAPI) {
       let activity = "";
       const render = () =>
         ctx.ui.setWidget("wf", [`wf tests — writing spec tests for ${targets.map((t) => t.id).join(", ")}   (Esc to stop)`, ...(activity ? [`  ↳ ${activity}`] : [])]);
+      const roots = testRoots(ctx.cwd);
       const pre = cfg.checkpoints ? snapshot(ctx.cwd, "wf: before tester") : undefined;
       busy = true;
       let res;
@@ -993,7 +994,7 @@ export default function wf(pi: ExtensionAPI) {
           cwd: ctx.cwd,
           role: "tester",
           systemPrompt: TESTER_SYSTEM,
-          brief: testerBrief(led, cfg, tasks, targets, guidance, previous),
+          brief: testerBrief(led, cfg, tasks, targets, guidance, previous, roots),
           prompt: `Carry out the brief in the attached file: write spec tests for ${targets.map((t) => t.id).join(", ")}. End with the wf-tests block.`,
           tools: [...READ_ONLY, "write"],
           model: roleModel(ctx, cfg, "tester"),
@@ -1040,6 +1041,10 @@ export default function wf(pi: ExtensionAPI) {
         });
         // A rewritten task that was already under way: remove repo copies of tests that no longer exist.
         if (t.status === "doing") for (const rel of oldFiles) if (!files.includes(rel)) fs.rmSync(path.join(ctx.cwd, rel), { force: true });
+        for (const f of misplacedTests(roots, files))
+          problems.push(
+            `${t.id}: ${f} is not under a folder where this project keeps tests (${roots.slice(0, 3).join(", ")}${roots.length > 3 ? ", …" : ""}), so the build would never run it. Fix: /${cmd("tests")} ${t.id} put the tests under ${roots[0]}`,
+          );
         if (files.length) spec.tasks[t.id] = { files, tests: (reported?.tests ?? []).filter(Boolean), hash: taskHash(t), at: now() };
         else if (reported?.skip) spec.tasks[t.id] = { files: [], tests: [], skip: reported.skip, hash: taskHash(t), at: now() };
         else {

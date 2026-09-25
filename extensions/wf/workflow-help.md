@@ -62,6 +62,10 @@ acceptance tests for each task, before any code exists.
   blocked, and the build asks you; only `/wf:tests` changes them.
 - **They're new files only.** The tester never edits your existing tests;
   a file that would overwrite an existing one is dropped (you're told).
+- **They go where your tests live.** The tester is told the project's test
+  folders (e.g. `src/test/java/`), and `/wf:tests` warns about any file outside
+  them: Maven, Gradle or pytest would never run it, and the gate would silently
+  be missing.
 
 **When tests don't fit**, skip them, but never silently:
 

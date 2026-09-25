@@ -313,9 +313,23 @@ End with exactly one block of valid JSON:
 - spec_gaps: what the spec leaves open or contradicts, which you had to guess or could not test; the human needs to know these; [] if none.
 - Keep every string on one line.`;
 
-export function testerBrief(led: Ledger, cfg: Config, tasks: Task[], targets: Task[], guidance: string, previous: Record<string, { rel: string; content: string }[]>): string {
+export function testerBrief(
+  led: Ledger,
+  cfg: Config,
+  tasks: Task[],
+  targets: Task[],
+  guidance: string,
+  previous: Record<string, { rel: string; content: string }[]>,
+  roots: string[],
+): string {
   return [
     `# Tester brief\n`,
+    roots.length
+      ? section(
+          "Where this project keeps its tests",
+          `${roots.map((r) => `- ${r}`).join("\n")}\n\nEvery file you write goes under one of these (in the right package/module), e.g. ${S}/T1/${roots[0]}…; the build only runs tests it finds there.`,
+        )
+      : "",
     section(
       "Write tests for",
       targets

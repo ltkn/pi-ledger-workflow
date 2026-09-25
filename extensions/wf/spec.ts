@@ -5,9 +5,11 @@
  * when the task starts and restores them before every test run, so implementers
  * can't change them.
  */
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { TEST_FILE } from "./checkpoint.ts";
 import { LEDGER_DIR, type Task } from "./ledger.ts";
 
 export const SPEC_DIR = path.join(LEDGER_DIR, "spec");
@@ -44,6 +46,38 @@ export function specState(spec: Spec | undefined, t: Task): SpecState {
   if (!s) return "missing";
   if (s.skip) return "skipped";
   return s.hash === taskHash(t) ? "ok" : "stale";
+}
+
+const TEST_DIR = /^(tests?|__tests__|specs?)$/i;
+const LANG_DIR = /^(java|kotlin|scala|groovy|resources)$/;
+
+/**
+ * Folders where the project keeps its tests, from the tracked test files: e.g. "src/test/java/",
+ * "order-service/src/test/java/", "tests/". Empty when tests live next to the code (Go, co-located JS)
+ * or when there are no tests yet.
+ */
+export function testRoots(cwd: string): string[] {
+  let tracked: string[];
+  try {
+    tracked = execFileSync("git", ["ls-files"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 }).split("\n");
+  } catch {
+    return [];
+  }
+  const roots = new Set<string>();
+  for (const f of tracked.filter((p) => TEST_FILE.test(p))) {
+    const segs = f.split("/");
+    const i = segs.findIndex((s, k) => k < segs.length - 1 && TEST_DIR.test(s));
+    if (i < 0) continue;
+    const end = LANG_DIR.test(segs[i + 1] ?? "") && i + 1 < segs.length - 1 ? i + 2 : i + 1;
+    roots.add(`${segs.slice(0, end).join("/")}/`);
+  }
+  return [...roots].sort();
+}
+
+/** Parked tests whose target path isn't under one of the project's test folders: the build wouldn't run them. */
+export function misplacedTests(roots: string[], files: string[]): string[] {
+  if (!roots.length) return [];
+  return files.filter((f) => !roots.some((r) => f.startsWith(r)));
 }
 
 const parkedRoot = (cwd: string, id: string) => path.join(cwd, SPEC_DIR, id);

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `/wf:tests` tells the tester where the project keeps its tests (e.g. `src/test/java/`, detected from the tracked test files) and warns about any spec test placed outside those folders, which the build would never run
 - Fix: finished features are archived to `.pi/wf-archive/` (which ignores itself in git) instead of `.pi/wf/archive/`, so fresh roles exploring the ledger no longer read old features' plans and spec tests; existing archives are moved automatically. Fresh roles are also told to ignore anything about other features
 - Comment rules for workers and the tester, checked by the reviewer, in any language (Javadoc, TSDoc, docstrings, SQL, config): brief, only what the code can't say (why, intent, constraints, non-obvious behaviour); no restating the code, no history or task ids, wrong comments updated or removed; API docs state the contract in a sentence or two; match the surrounding density
 - A shared quality bar in every role that designs, writes or judges code: best-practice, clean, secure solutions with current APIs, no quick fixes. Scope recommends accordingly (and flags outdated or insecure existing patterns for you to decide); the plan allows no stopgaps; workers fix root causes and never make things pass by silencing errors, hardcoding, special-casing test inputs, sleeps, type casts or copy-paste; the manager asks for root-cause fixes; the tester writes tests a hardcoded implementation can't pass; the reviewer flags quick fixes, deprecated APIs and security problems, and they block a merge
