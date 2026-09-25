@@ -31,12 +31,12 @@ the result you got, and `/wf:help <topic>` posts any section into the session.
 ## Install
 
 ```bash
-pi install git:github.com/YOUR_GITHUB_USER/pi-ledger-workflow@v0.1.0   # from git
+pi install git:github.com/ltkn/pi-ledger-workflow@v0.2.0   # from git
 pi install npm:pi-ledger-workflow                                       # from npm
 pi install -l …                                                         # project-only
 ```
 
-Try it once without installing: `pi -e git:github.com/YOUR_GITHUB_USER/pi-ledger-workflow`.
+Try it once without installing: `pi -e git:github.com/ltkn/pi-ledger-workflow`.
 
 Add the ledger to your project's `.gitignore` unless you want to keep it:
 

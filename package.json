@@ -1,6 +1,6 @@
 {
   "name": "pi-ledger-workflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scope → plan → build → review for the Pi coding agent: fresh-context manager/worker loop coordinated through an on-disk ledger, verified by your test suite. Adapted from GVS5H (arXiv:2608.26480).",
   "type": "module",
   "license": "MIT",
