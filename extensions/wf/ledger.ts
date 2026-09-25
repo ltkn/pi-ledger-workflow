@@ -46,6 +46,35 @@ export interface Pause {
   question: string;
   from: "worker" | "manager" | "harness";
   task?: string;
+  /** harness pauses: why the loop stopped */
+  kind?: "attempts" | "lost-work" | "tampering";
+}
+
+/** One entry in /wf:undo's list: the state to go back to, files and ledger alike. */
+export interface Checkpoint {
+  /** "start", "r<round>", or "u<n>" for the state saved before an undo */
+  id: string;
+  at: string;
+  /** shadow snapshot of the working tree at this point */
+  commit: string;
+  tree: string;
+  /** HEAD at this point, to warn when you committed since */
+  head?: string;
+  tasks: Task[];
+  notes: string;
+  /** rounds: the task worked on, the files it changed, and a one-line outcome */
+  task?: string;
+  files?: string[];
+  summary?: string;
+}
+
+/** What the harness itself saw in the last round (the manager's ground truth next to the worker's report). */
+export interface RoundRecord {
+  round: number;
+  task: string;
+  stat: string;
+  patch: string;
+  flags: string[];
 }
 
 export interface State {
@@ -58,6 +87,9 @@ export interface State {
   lastVerify?: VerifyResult;
   /** changed: whether that round changed files on disk */
   lastReport?: WorkerReport & { task: string; changed?: boolean };
+  lastRound?: RoundRecord;
+  /** test-tampering flags per task; the second one pauses the build */
+  tamper?: Record<string, number>;
   updatedAt: string;
 }
 
@@ -79,6 +111,8 @@ export interface Config {
   /** Load your other Pi extensions inside fresh workers (wf itself is never needed there). */
   childExtensions: boolean;
   workerTools: string[];
+  /** Shadow snapshots around every round: real diffs for the manager, lost-work/tampering detection, /wf:undo. */
+  checkpoints: boolean;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -92,6 +126,7 @@ export const DEFAULT_CONFIG: Config = {
   thinking: {},
   childExtensions: false,
   workerTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  checkpoints: true,
 };
 
 export function cap(text: string, n: number): string {
@@ -185,6 +220,18 @@ export class Ledger {
   }
   saveTasks(tasks: Task[]): void {
     this.write("tasks.json", `${JSON.stringify({ tasks }, null, 2)}\n`);
+  }
+
+  checkpoints(): Checkpoint[] {
+    try {
+      const list = JSON.parse(this.read("checkpoints.json"));
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+  saveCheckpoints(list: Checkpoint[]): void {
+    this.write("checkpoints.json", `${JSON.stringify(list, null, 2)}\n`);
   }
 
   recordDecision(text: string): void {

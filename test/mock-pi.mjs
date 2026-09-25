@@ -11,6 +11,7 @@ const say = (text) =>
 const tasksIn = () => JSON.parse(brief.match(/## tasks.json\n\n([\s\S]*?)\n## /)[1]).tasks;
 
 if (sys.includes("MANAGER")) {
+  if (process.env.MOCK_BRIEF_OUT) fs.appendFileSync(process.env.MOCK_BRIEF_OUT, brief + "\n=====\n");
   if (scenario === "failing") {
     // Always claims everything is done: the harness must veto this.
     const tasks = tasksIn().map((t) => ({ ...t, status: "done" }));
@@ -25,7 +26,20 @@ if (sys.includes("MANAGER")) {
     say("ok\n```wf-manage\n" + JSON.stringify({ tasks: delta, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
   }
 } else if (sys.includes("WORKER")) {
-  if (scenario === "stuck") {
+  const done = (id) => say("```wf-report\n" + JSON.stringify({ status: "done", summary: `did ${id}` }) + "\n```");
+  if (scenario === "revert") {
+    // T2's first attempt wipes T1's file, like a stray `git checkout .`/`git stash` would.
+    const id = brief.match(/task (\w+):/)[1];
+    if (id === "T2" && !fs.existsSync("T2.txt")) fs.rmSync("T1.txt", { force: true });
+    fs.writeFileSync(`${id}.txt`, "x");
+    done(id);
+  } else if (scenario === "tamper") {
+    // Every attempt drops one test case from the existing test file (and claims done).
+    const cur = (fs.readFileSync("tests/a_test.py", "utf8").match(/def test_/g) ?? []).length;
+    fs.writeFileSync("tests/a_test.py", Array.from({ length: cur - 1 }, (_, i) => `def test_${i}():\n    assert True\n`).join(""));
+    fs.appendFileSync("impl.txt", "x");
+    done("T1");
+  } else if (scenario === "stuck") {
     // Makes progress on disk every round but never finishes: exhausts the attempt limit.
     fs.appendFileSync("stuck.txt", "x");
     say("```wf-report\n" + JSON.stringify({ status: "partial", summary: "still going", notes: "n" }) + "\n```");

@@ -22,13 +22,14 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   const cmds: Record<string, any> = {};
   const posts: string[] = [];
   const answers: string[] = [];
+  const confirms: boolean[] = [];
   wf({
     registerCommand: (n: string, o: any) => (cmds[n] = o),
     sendMessage: (m: any) => m.display && posts.push(m.content),
   } as any);
   const ctx: any = {
     cwd: repo, mode: "print", hasUI: true, isIdle: () => true, model: { provider: "p", id: "m" }, thinkingLevel: "low",
-    ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {}, confirm: async () => true,
+    ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {}, confirm: async () => confirms.shift() ?? true,
       input: async () => answers.shift() ?? "", onTerminalInput: () => () => {} },
   };
   const run = async (name: string, args = "") => cmds[`wf:${name}`].handler(args, ctx);
@@ -39,12 +40,12 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
     fs.writeFileSync(".pi/wf/plan.md", plan);
     fs.writeFileSync(".pi/wf/tasks.json", JSON.stringify({ tasks }));
   };
-  return { cmds, posts, answers, run, read, init };
+  return { cmds, posts, answers, confirms, repo, run, read, init };
 }
 
-test("registers the six commands", () => {
+test("registers the seven commands", () => {
   const { cmds } = setup("happy", {}, []);
-  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status"]);
+  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:status", "wf:undo"]);
 });
 
 test("/wf:help lists topics and shows one", async () => {
@@ -140,4 +141,71 @@ test("prompts: placeholders filled; worker brief has the verify command and the 
   assert.match(brief, /`mvn -q test`/);
   assert.match(brief, /## Previous attempt at this task\n\npartial: records done, tests remain/);
   assert.doesNotMatch(workerBrief(led, DEFAULT_CONFIG, st, { id: "T3", title: "t", status: "doing", attempts: 1 }, "", null), /Previous attempt/);
+});
+
+test("checkpoints: lost work is detected and restored on confirm", async () => {
+  const t = setup("revert", { verify: null }, [{ id: "T1", title: "a" }, { id: "T2", title: "b" }]);
+  await t.init();
+  await t.run("build");
+  const out = t.posts.at(-1)!;
+  assert.match(out, /BUILD COMPLETE/);
+  assert.match(out, /⚑ Harness flags[\s\S]*lost-work: reverted earlier tasks' work in T1\.txt \(restored by the human\)/);
+  assert.ok(fs.existsSync(path.join(t.repo, "T1.txt"))); // restored
+  assert.match(t.read("decisions.md"), /the human restored it/);
+});
+
+test("checkpoints: declining the restore pauses with the undo hint", async () => {
+  const t = setup("revert", { verify: null }, [{ id: "T1", title: "a" }, { id: "T2", title: "b" }]);
+  await t.init();
+  t.confirms.push(false);
+  await t.run("build");
+  const out = t.posts.at(-1)!;
+  assert.match(out, /BUILD PAUSED/);
+  assert.match(out, /\/wf:undo r\d+/);
+  assert.equal(JSON.parse(t.read("state.json")).pause.kind, "lost-work");
+  assert.ok(!fs.existsSync(path.join(t.repo, "T1.txt")));
+});
+
+test("checkpoints: fewer test cases block done, the second time pauses", async () => {
+  const t = setup("tamper", { verify: null }, [{ id: "T1", title: "a" }]);
+  fs.mkdirSync(path.join(t.repo, "tests"));
+  fs.writeFileSync(path.join(t.repo, "tests/a_test.py"), "def test_a():\n    pass\ndef test_b():\n    pass\ndef test_c():\n    pass\n");
+  execSync("git add . && git commit -qm tests", { cwd: t.repo });
+  await t.init();
+  await t.run("build"); // round 1: 3 → 2 (flag, not done); round 2: 2 → 1 (second flag → ask; empty → pause)
+  const out = t.posts.at(-1)!;
+  assert.match(out, /BUILD PAUSED/);
+  assert.match(out, /changed existing tests twice/);
+  assert.match(t.read("log.md"), /tampering: tests\/a_test\.py: 3 → 2 test cases/);
+  assert.equal(JSON.parse(t.read("tasks.json")).tasks[0].status, "doing");
+  assert.equal(JSON.parse(t.read("state.json")).pause.kind, "tampering");
+});
+
+test("/wf:undo restores files and tasks, and can be undone", async () => {
+  const t = setup("happy", { verify: null }, [{ id: "T1", title: "domain" }, { id: "T2", title: "endpoint" }, { id: "T3", title: "tests" }]);
+  const briefs = path.join(t.repo, "..", `${path.basename(t.repo)}-briefs.md`);
+  process.env.MOCK_BRIEF_OUT = briefs;
+  await t.init();
+  await t.run("build");
+  delete process.env.MOCK_BRIEF_OUT;
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  assert.match(fs.readFileSync(briefs, "utf8"), /actually changed \(harness diff\)\n\nT1\.txt \| 1 \+/); // manager sees the real diff
+  const head = execSync("git rev-parse HEAD", { cwd: t.repo, encoding: "utf8" });
+  const cps = JSON.parse(t.read("checkpoints.json"));
+  const r3 = cps.find((c: any) => c.task === "T3");
+  assert.ok(cps[0].id === "start" && r3);
+
+  await t.run("undo", `${r3.id} wrong approach`);
+  assert.ok(!fs.existsSync(path.join(t.repo, "T3.txt")));
+  assert.ok(fs.existsSync(path.join(t.repo, "T2.txt")));
+  assert.equal(JSON.parse(t.read("tasks.json")).tasks[2].status, "todo");
+  assert.match(t.read("decisions.md"), /undid rounds r\d+[^:]*: wrong approach/);
+  assert.match(t.posts.at(-1)!, /Undone to before r\d+/);
+
+  assert.equal(execSync("git rev-parse HEAD", { cwd: t.repo, encoding: "utf8" }), head); // branch untouched
+  assert.equal(execSync("git diff --cached --name-only", { cwd: t.repo, encoding: "utf8" }), ""); // staging area untouched
+
+  await t.run("undo", "u1"); // back to where we were
+  assert.ok(fs.existsSync(path.join(t.repo, "T3.txt")));
+  assert.equal(JSON.parse(t.read("tasks.json")).tasks[2].status, "done");
 });

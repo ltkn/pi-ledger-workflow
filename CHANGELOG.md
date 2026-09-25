@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Checkpoints: shadow snapshots of the working tree before and after every build round, in git's object store (`refs/wf/checkpoints`); your branch, commits and staging area are never touched. Disable with `"checkpoints": false`
+- The manager's brief shows what the last round actually changed (diff stat and capped patch), and it's told to trust the diff over the report
+- Lost-work detection: a round that puts other tasks' files back to their start-of-build state is flagged; you're asked to restore those files, or the build pauses
+- Test-tampering detection: deleted test files, fewer test cases or new skip markers in existing tests block the task from completing; the second time on the same task pauses the build
+- `/wf:undo [round] [why]`: pick a round from a list and restore the working tree, task list and notes to before it; the reason goes into `decisions.md`; undo itself can be undone
+
 ## 0.2.0
 
 - `workflow-help.md`: day-to-day guide for the normal path and edge cases (stuck tasks, stalls, replanning, undo, review findings)

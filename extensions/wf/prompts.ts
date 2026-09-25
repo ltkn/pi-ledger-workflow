@@ -70,6 +70,8 @@ Each round you:
 2. Either declare the feature done, or name the single next task and give the worker a precise instruction for it.
 
 Rules:
+- The harness diff of the last round is ground truth for what changed: if it contradicts the worker's report, trust the diff and say so in the instruction.
+- Harness flags (lost work, changed or skipped existing tests) mean the task is not done: the instruction must address the flag first.
 - Verification is ground truth. If it failed, you may not declare done: the next task must fix the failure or switch approach. Say which in the instruction, quoting the failing test or error.
 - Declare done only when every task is done or dropped and verification did not fail (or no verification is configured).
 - Continuing a task after a partial report is normal. But if the last round changed no files, do not hand out the same task with the same instruction: give a different approach or a smaller first step, split the task, or ask.
@@ -187,6 +189,12 @@ export function managerBrief(led: Ledger, cfg: Config, st: State, tasks: Task[],
         : "(none yet)",
     ),
     section("Last verification (ground truth)", st.lastVerify?.summary ?? "(not run yet)"),
+    st.lastRound
+      ? section(
+          `What round ${st.lastRound.round} (${st.lastRound.task}) actually changed (harness diff)`,
+          `${st.lastRound.flags.length ? `⚑ HARNESS FLAGS:\n${st.lastRound.flags.map((f) => `- ${f}`).join("\n")}\n\n` : ""}${st.lastRound.stat || "(no file changes)"}${st.lastRound.patch ? `\n\n${st.lastRound.patch}` : ""}`,
+        )
+      : "",
     section("Recent log", cap(log, 3000)),
   ].join("\n");
 }
@@ -203,6 +211,9 @@ export function workerBrief(led: Ledger, cfg: Config, st: State, task: Task, ins
         (verifyCmd ? `After you, the harness runs: \`${verifyCmd}\`` : "No verification command is configured: your own checks are all there is."),
     ),
     prev ? section("Previous attempt at this task", `${prev.status}: ${prev.summary}`) : "",
+    st.lastRound?.task === task.id && st.lastRound.flags.length
+      ? section("⚑ The harness flagged the previous attempt", `${st.lastRound.flags.map((f) => `- ${f}`).join("\n")}\nFix this first; the task can't be completed while it stands.`)
+      : "",
     failing ? section("Verification is currently FAILING", st.lastVerify!.summary) : "",
     section("objective.md", led.read("objective.md")),
     section("decisions.md (binding)", led.read("decisions.md")),

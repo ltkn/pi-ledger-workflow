@@ -15,12 +15,13 @@ see [Credits](#credits).
 /wf:build [answer]    manager → worker → verify, repeated   fresh contexts · automatic
 /wf:review [focus]    independent review of the diff        fresh context
 /wf:status            where things stand
+/wf:undo [round]      go back to before a build round (picked from a list)
 /wf:help [topic]      what to do next, and how to handle edge cases
 ```
 
 `wf` = workflow. The `name:verb` form mirrors Pi's own `/skill:name`, can't
 collide with built-ins or other extensions' `/plan`, and typing `/wf` lists
-all six commands.
+all seven commands.
 
 **Day-to-day guide:** [`workflow-help.md`](extensions/wf/workflow-help.md)
 covers the normal path and what to do when a task keeps failing, the build
@@ -110,10 +111,19 @@ Press **Esc** during build or review to stop; `/wf:build` resumes.
 | `assumptions.md` | harness | reviewer, you |
 | `log.md` | harness, per round | manager (last 4), you |
 | `review.md` | `/wf:review` | you |
+| `checkpoints.json` | harness, per round | `/wf:undo` |
 | `state.json`, `config.json` | harness | — |
 
 Workers are told not to touch `.pi/wf/`; the harness owns every ledger write
 during build so caps and formats hold.
+
+**Checkpoints.** Before and after every round the harness snapshots the working
+tree into git's object store (`refs/wf/checkpoints`, via a private index), so
+your branch, commits and staging area are never touched. From the two snapshots
+it gives the manager the round's real diff, flags a round that reverts other
+tasks' work or deletes/skips/cuts existing tests (a flagged round can't complete
+its task), and lets `/wf:undo` restore any earlier state. See
+[`/wf:help checks`](extensions/wf/workflow-help.md#what-the-harness-checks-after-every-round).
 
 ## Configuration
 
@@ -131,6 +141,7 @@ during build so caps and formats hold.
 | `thinking` | `{}` | per role; unset = your session's level |
 | `childExtensions` | false | load your other extensions in fresh workers |
 | `workerTools` | read,bash,edit,write,grep,find,ls | |
+| `checkpoints` | true | shadow snapshots around every round (git only): the manager gets the real diff, lost work and changed/skipped tests are flagged, `/wf:undo` works |
 
 For a large Maven build, point `verify` at the affected module
 (`"mvn -B -q -pl order-service -am test"`). Workers run targeted tests

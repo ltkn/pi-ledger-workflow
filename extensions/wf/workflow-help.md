@@ -72,6 +72,8 @@ The headline at the end of the build tells you what happened.
 | ✅ BUILD COMPLETE | Every task done, tests pass | Read the listed assumptions, then `/wf:review` |
 | ⏸ PAUSED, with a question | A worker or the manager needs a decision only you can make | `/wf:build <answer>`, or discuss here first |
 | ⏸ PAUSED, task used its attempts | One task took `maxTaskAttempts` rounds | Find out why, then nudge, restructure or replan. See `/wf:help stuck-task` |
+| ⏸ PAUSED, lost work | A round put earlier tasks' files back to how they were before the build (a stray `git checkout`/`stash`), and you didn't restore them | `/wf:undo` and pick that round, or keep it and `/wf:build <guidance>`. See `/wf:help checks` |
+| ⏸ PAUSED, tests changed again | A worker deleted, skipped or cut down existing tests twice on the same task | Tell it what's allowed: `/wf:build <answer>`. See `/wf:help checks` |
 | ⏹ STALLED | A task was handed out again after a round that changed nothing | Same as above: the worker is going in circles |
 | ⏹ round budget reached | 10 rounds used, still work left | `/wf:build` to continue. Normal on bigger features |
 | ⏹ STOPPED by you | You pressed Esc | `/wf:build` resumes |
@@ -98,6 +100,8 @@ usually tells you what's going on:
   A wrong belief here ("the DTO lives in module X") explains a lot of loops,
   because every new worker inherits it.
 - **`git diff`**: what the workers actually changed. They never commit.
+- **`/wf:undo`** (then Esc): the list of rounds, each with its task, files
+  changed, test result and any ⚑ flag. A quick way to see where it went wrong.
 
 You can also just ask Pi in the main session: "why is T3 stuck? Look at
 .pi/wf/log.md and the diff." It has the build messages in context and can
@@ -127,7 +131,8 @@ again. Plain `/wf:build` without text asks you for the answer first.
 When a nudge isn't enough:
 
 - **The task itself is wrong** → `/wf:plan <what to change>`. See `/wf:help replan`.
-- **The code went somewhere bad** → throw it away with git. See `/wf:help undo`.
+- **The code went somewhere bad** → `/wf:undo` and pick the round before it
+  went wrong. See `/wf:help undo`.
 - **It's faster to do it yourself** → see `/wf:help fix-yourself`.
 - **You don't need it** → set its `"status"` to `"dropped"` in
   `.pi/wf/tasks.json`, then `/wf:build`. The harness respects manual edits.
@@ -155,20 +160,62 @@ the replan, so the workers get it too.
 <!-- wf:topic undo -->
 ## Throw away a bad attempt
 
-Workers never commit, so git is your undo:
+wf snapshots the working tree before and after every build round, so undo is one
+command:
 
-- `git checkout -- <files>` for specific files, or `git stash` for everything
-  uncommitted.
-- Then `/wf:build <what to do differently>`, so the next worker doesn't walk
-  the same way again.
+```
+/wf:undo
+  ↺ before undo (12:41)
+  r7  T3 partial · 3 files +12 −4 · verify ✗ · "moved distancePct into publisher"
+  r6  T3 partial · 2 files +30 −2 · verify ✗ · "added KlSnapshot fields"
+  r5  T2 done · 4 files +85 −10 · verify ✓ · …
+  ⌂ start of build
+```
 
-**Make this easy by committing as tasks succeed.** When a build pauses with T1
-and T2 done, run `git commit -am "T1-T2"`. Discarding T3 then can't touch good
-work. Review still sees the whole feature, because it diffs against the commit
-the feature *started* from, not against your latest commit.
+Pick an entry and the working tree goes back to how it was **before** that
+round: picking r6 drops rounds 6 and 7. You see the files and tasks that will
+change and confirm first. The task list and `notes.md` go back too, so no one
+works from notes about code that's gone. Then:
 
-If `notes.md` now contains beliefs from the discarded attempt, mention it in
-your guidance ("ignore the notes about X, that approach was reverted").
+- Give a reason when asked (or `/wf:undo r6 <why>`). It goes into
+  `decisions.md`, so the next worker doesn't walk the same way again.
+- `/wf:build` continues from there.
+- Changed your mind? `/wf:undo` again and pick **↺ before undo**.
+
+Undo never touches your branch, your commits or your staging area; the
+snapshots live in git's object store under `refs/wf/checkpoints` and are dropped
+when you start the next feature.
+
+**Git still works too, and commits are still a good habit.** When a build pauses
+with T1 and T2 done, `git commit -am "T1-T2"` makes that state permanent. If you
+undo past a commit, the undone work shows up as uncommitted changes against it
+(you're warned). Review still sees the whole feature, because it diffs against
+the commit the feature *started* from.
+<!-- /wf -->
+
+<!-- wf:topic checks -->
+## What the harness checks after every round
+
+Besides running your tests, wf compares the snapshots from before and after
+each round, so it doesn't rely on the worker's word:
+
+- **The real diff goes to the manager.** If the worker says "implemented X" and
+  the diff says otherwise, the manager sees both and trusts the diff.
+- **Lost work.** If a round puts files that *other* tasks changed back to how
+  they were before the build (the usual trace of a stray `git checkout .` or
+  `git stash`), you're asked right away whether to restore those files. Say yes
+  and the build carries on; say no and it pauses, so you can `/wf:undo` or
+  continue on purpose.
+- **Changed tests.** If a round deletes an existing test file, cuts its number
+  of test cases, or adds skip/disable markers, the task can't be marked done
+  and the next manager and worker are told why. The second time on the same
+  task, the build pauses and asks you, because sometimes a test change is
+  legitimate, and only you can say so.
+
+Both checks are heuristics, so they flag and never silently revert. Every flag
+shows up with a ⚑ in the build summary, in `log.md` and in the `/wf:undo` list.
+If you don't want any of this (say, a non-git project or a huge repo), set
+`"checkpoints": false` in `.pi/wf/config.json`.
 <!-- /wf -->
 
 <!-- wf:topic fix-yourself -->
@@ -266,7 +313,7 @@ a question. Pair it with a larger `maxRounds` for long runs.
 
 - **`/wf:build <guidance>`** to nudge a running feature.
 - **`/wf:plan <change>`** when a task or the plan is wrong.
-- **git** when the code is wrong.
+- **`/wf:undo`** when the code is wrong.
 - **The main session** for small fixes after the build is done.
 - **Look before you steer**: `/wf:status`, `log.md`, `notes.md`, `git diff`.
 - **Commit as tasks succeed**, so undo is always cheap.
@@ -317,15 +364,31 @@ reference. Text in `{braces}` is filled in with the actual task, limit and so on
 - Look first: `/wf:status`, `.pi/wf/log.md`, `git diff` (`/wf:help diagnose`).
 - Nudge: `/wf:build <hint or different approach>`. This resets {task}'s attempts.
 - Restructure: `/wf:build drop {task}` · `/wf:build split {task} into …`
-- Code went wrong: discard with git, then `/wf:build <what to do differently>`.
+- Code went wrong: `/wf:undo` to the round before, then `/wf:build <what to do differently>`.
 - Task itself wrong: `/wf:plan <change>` · more: `/wf:help stuck-task`
+<!-- /wf -->
+
+### Build paused: lost work
+<!-- wf:tip build.paused-lost-work -->
+**What now** (round {round} of {task} reverted earlier tasks' work)
+- Drop the round: `/wf:undo r{round}`.
+- Or keep it on purpose: `/wf:build <what the worker should do instead>`.
+- More: `/wf:help checks`
+<!-- /wf -->
+
+### Build paused: tests changed again
+<!-- wf:tip build.paused-tampering -->
+**What now** ({task}'s worker changed existing tests twice)
+- Tests right? `/wf:build the tests are right, fix the code`.
+- A test change legitimately needed? Say which and why: `/wf:build <answer>`.
+- Want the old tests back? `/wf:undo` to before the round · more: `/wf:help checks`
 <!-- /wf -->
 
 ### Build stalled
 <!-- wf:tip build.stalled -->
 **What now**
 - The worker is going in circles. Check `.pi/wf/log.md` and `notes.md`: a wrong belief in the notes is a common cause.
-- Nudge: `/wf:build <guidance>` · task wrong: `/wf:plan <change>` · code wrong: git, then `/wf:build <guidance>`.
+- Nudge: `/wf:build <guidance>` · task wrong: `/wf:plan <change>` · code wrong: `/wf:undo`, then `/wf:build <guidance>`.
 - More: `/wf:help stuck-task`
 <!-- /wf -->
 
@@ -341,7 +404,7 @@ reference. Text in `{braces}` is filled in with the actual task, limit and so on
 <!-- wf:tip build.aborted -->
 **What now**
 - Nothing is lost: `/wf:build` resumes.
-- Stopped because it was heading the wrong way? Discard with git if needed, then `/wf:build <what to do instead>`.
+- Stopped because it was heading the wrong way? `/wf:undo` to before that round, then `/wf:build <what to do instead>`.
 - More: `/wf:help undo`
 <!-- /wf -->
 
@@ -350,6 +413,14 @@ reference. Text in `{braces}` is filled in with the actual task, limit and so on
 **What now**
 - Check the error above and `.pi/wf/log.md`. Usual causes: a provider error or a verify timeout (`verifyTimeoutSec`).
 - Fix the cause, then `/wf:build` resumes.
+<!-- /wf -->
+
+### After /wf:undo
+<!-- wf:tip undo.done -->
+**What now**
+- `/wf:build` continues from here; your reason (if any) is in `decisions.md`.
+- Changed your mind? `/wf:undo {id}` goes back to where you just were.
+- More: `/wf:help undo`
 <!-- /wf -->
 
 ### Review added follow-up tasks

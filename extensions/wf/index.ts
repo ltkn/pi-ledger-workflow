@@ -6,6 +6,7 @@
  *   /wf:build [answer]    manager → worker → verify    (fresh contexts, automatic)
  *   /wf:review [focus]    independent review           (fresh context)
  *   /wf:status            where things stand
+ *   /wf:undo [id]         restore the working tree to before a build round
  *   /wf:help [topic]      what to do next, and how to handle edge cases
  *
  * Based on the method of:
@@ -16,9 +17,12 @@
  * ("Credits" and "What's taken from the paper").
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { type Flag, changedPaths, diffSummary, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
 import {
+  type Checkpoint,
   type Config,
   type Ledger as LedgerT,
+  type Pause,
   type State,
   type Task,
   type WorkerReport,
@@ -62,6 +66,10 @@ interface ManageDecision {
 
 export default function wf(pi: ExtensionAPI) {
   /* ------------------------------- helpers ------------------------------- */
+
+  /** A build or review is running (they span many turns; /wf:undo must not race them). */
+  let busy = false;
+  const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
 
   /** Visible message in the session; also enters the main agent's context so you can discuss it. */
   const post = (content: string) => pi.sendMessage({ customType: "wf", content, display: true }, { triggerTurn: false });
@@ -120,6 +128,7 @@ export default function wf(pi: ExtensionAPI) {
         if (dest) ctx.ui.notify(`Archived previous ledger to ${dest}`, "info");
       }
       const cfg = led.config(); // writes defaults on first use
+      dropCheckpoints(ctx.cwd);
       led.write("objective.md", `# Objective\n\n${feature}\n`);
       led.write("decisions.md", "# Decisions (binding for every worker)\n\n");
       led.saveState(newState(feature, gitHead(ctx.cwd)));
@@ -162,7 +171,7 @@ export default function wf(pi: ExtensionAPI) {
       // A task paused on its attempt limit (and not since dropped/finished/reset by hand)
       // needs an answer like any question, and the answer buys it a fresh set of attempts.
       const exhausted =
-        st.pause?.from === "harness" && st.pause.task
+        st.pause?.from === "harness" && st.pause.task && (st.pause.kind ?? "attempts") === "attempts"
           ? tasks.find(
               (t) => t.id === st.pause!.task && t.status !== "done" && t.status !== "dropped" && (t.attempts ?? 0) >= cfg.maxTaskAttempts,
             )
@@ -174,7 +183,7 @@ export default function wf(pi: ExtensionAPI) {
       if (guidance) {
         if (st.pause) led.recordDecision(`Q (${st.pause.from}${st.pause.task ? `, ${st.pause.task}` : ""}): ${st.pause.question}\nA: ${guidance}`);
         else led.recordDecision(`Guidance: ${guidance}`);
-      } else if (st.pause && (st.pause.from !== "harness" || exhausted)) {
+      } else if (st.pause && (st.pause.from !== "harness" || exhausted || st.pause.kind === "tampering")) {
         const answer = ctx.hasUI ? await ctx.ui.input("Answer the pending wf question", st.pause.question.slice(0, 200)) : undefined;
         if (!answer?.trim()) {
           post(`**Build is waiting for a decision**\n\n${st.pause.question}\n\nAnswer with \`/${cmd("build")} <answer>\`, or discuss here first.`);
@@ -186,6 +195,7 @@ export default function wf(pi: ExtensionAPI) {
         exhausted.attempts = 0;
         led.saveTasks(tasks);
       }
+      if (st.pause?.kind === "tampering" && st.pause.task && st.tamper) st.tamper[st.pause.task] = 0;
       st.pause = undefined;
       st.phase = "building";
       led.saveState(st);
@@ -223,16 +233,29 @@ export default function wf(pi: ExtensionAPI) {
       let lastRoundChanged = true;
 
       /** Ask inline if possible; otherwise (or if skipped) pause back to the conversation. */
-      const askHuman = async (question: string, from: "worker" | "manager" | "harness", task?: string): Promise<boolean> => {
+      const askHuman = async (question: string, from: Pause["from"], task?: string, kind?: Pause["kind"]): Promise<boolean> => {
         post(`**wf needs a decision** (${from}${task ? `, ${task}` : ""})\n\n${question}`);
         const a = ctx.hasUI ? await ctx.ui.input("Answer now (empty = pause and discuss)", "") : undefined;
         if (a?.trim()) {
           led.recordDecision(`Q (${from}${task ? `, ${task}` : ""}): ${question}\nA: ${a.trim()}`);
           return true;
         }
-        st.pause = { question, from, task };
+        st.pause = { question, from, task, kind };
         return false;
       };
+
+      // Checkpoints: a start-of-build anchor, then a snapshot before and after every worker round.
+      let cps: Checkpoint[] = cfg.checkpoints ? led.checkpoints() : [];
+      let start = cps.find((c) => c.id === "start");
+      if (cfg.checkpoints && !start) {
+        const snap = snapshot(ctx.cwd, "wf: start of build");
+        if (snap) {
+          start = { id: "start", at: now(), ...snap, head: gitHead(ctx.cwd), tasks: clone(tasks), notes: led.read("notes.md") };
+          cps.push(start);
+          led.saveCheckpoints(cps);
+        }
+      }
+      const flagsThisRun: string[] = [];
 
       const firstUnfinished = () => tasks.find((t) => t.status === "doing") ?? tasks.find((t) => t.status === "todo");
 
@@ -283,7 +306,9 @@ export default function wf(pi: ExtensionAPI) {
             // The manager may only mark done a task a worker actually attempted, and never while
             // verification is failing (paper: verifier is ground truth; no finishing on an empty workspace).
             status:
-              status === "done" && old?.status !== "done" && (!(old?.attempts ?? 0) || st.lastVerify?.ok === false)
+              status === "done" &&
+              old?.status !== "done" &&
+              (!(old?.attempts ?? 0) || st.lastVerify?.ok === false || (st.lastRound?.task === old?.id && !!st.lastRound?.flags.length))
                 ? (old?.status ?? "todo")
                 : status,
             attempts: old?.attempts ?? 0,
@@ -298,6 +323,7 @@ export default function wf(pi: ExtensionAPI) {
         tasks = merged;
       };
 
+      busy = true;
       try {
         for (let round = 1; round <= cfg.maxRounds; round++) {
           if (abort.signal.aborted) {
@@ -305,6 +331,8 @@ export default function wf(pi: ExtensionAPI) {
             break;
           }
           st.roundsTotal++;
+          const roundTasks = clone(tasks);
+          const roundNotes = led.read("notes.md");
 
           /* ---- MANAGE (fresh context, read-only) ---- */
           activity = "";
@@ -382,7 +410,7 @@ export default function wf(pi: ExtensionAPI) {
           if (next.attempts > cfg.maxTaskAttempts) {
             next.attempts--;
             const q = `${next.id} "${next.title}" has taken ${cfg.maxTaskAttempts} rounds without completing.\nLast report: ${st.lastReport?.summary ?? "(none)"}\nLast verification: ${st.lastVerify?.summary.split("\n")[0] ?? "(none)"}\n\nHow should it proceed? (e.g. a hint, a different approach, drop or split the task)`;
-            if (!(await askHuman(q, "harness", next.id))) {
+            if (!(await askHuman(q, "harness", next.id, "attempts"))) {
               outcome = "paused";
               break;
             }
@@ -394,6 +422,14 @@ export default function wf(pi: ExtensionAPI) {
 
           /* ---- WORK (fresh context, full tools) ---- */
           const fpBefore = fingerprint(ctx.cwd);
+          const n = st.roundsTotal;
+          const pre = start ? snapshot(ctx.cwd, `wf: before round ${n} (${next.id})`) : undefined;
+          let entry: Checkpoint | undefined;
+          if (pre) {
+            entry = { id: `r${n}`, at: now(), ...pre, head: gitHead(ctx.cwd), tasks: roundTasks, notes: roundNotes, task: next.id };
+            cps.push(entry);
+            led.saveCheckpoints(cps);
+          }
           activity = "";
           render(round, `worker ${next.id}`);
           const wres = await runFresh({
@@ -448,8 +484,43 @@ export default function wf(pi: ExtensionAPI) {
           }
           if (notes?.trim()) led.write("notes.md", cap(notes.trim(), cfg.caps.notes) + "\n");
 
+          /* ---- INSPECT (harness): what the round really changed, and anything it broke ---- */
+          let post = pre ? snapshot(ctx.cwd, `wf: after round ${n} (${next.id})`) : undefined;
+          let flags: Flag[] = [];
+          let pauseAfter: Pause | undefined;
+          if (pre && post && start) {
+            const others = new Set(cps.filter((c) => c.task && c.task !== next!.id).flatMap((c) => c.files ?? []));
+            flags = inspectRound(ctx.cwd, pre, post, start, others);
+            const lost = flags.find((f) => f.kind === "lost-work");
+            if (lost) {
+              render(round, "lost work?");
+              const restoreIt =
+                ctx.hasUI &&
+                (await ctx.ui.confirm(
+                  `Round ${n} (${next.id}) reverted earlier work`,
+                  `${lost.files.join("\n")}\n\nRestore these files to how they were before the round? The rest of the round's changes stay.`,
+                ));
+              if (restoreIt) {
+                restore(ctx.cwd, post.commit, pre.commit, lost.files);
+                post = snapshot(ctx.cwd, `wf: after round ${n} (${next.id}), lost work restored`) ?? post;
+                lost.detail += " (restored by the human)";
+                led.recordDecision(`Round ${n} (${next.id}) reverted earlier tasks' work in ${lost.files.join(", ")}; the human restored it. Never discard other tasks' changes.`);
+              } else {
+                pauseAfter = {
+                  from: "harness",
+                  task: next.id,
+                  kind: "lost-work",
+                  question: `Round ${n} (${next.id}) ${lost.detail}.\nUndo it with /${cmd("undo")} (pick r${n} to drop the whole round), or keep it and continue with /${cmd("build")} <guidance>.`,
+                };
+              }
+            }
+          }
+          const tamper = flags.find((f) => f.kind === "tampering");
+          if (tamper) st.tamper = { ...st.tamper, [next.id]: (st.tamper?.[next.id] ?? 0) + 1 };
+          flagsThisRun.push(...flags.map((f) => `r${n} ${next!.id} ${f.kind}: ${f.detail}`));
+
           const fpAfter = fingerprint(ctx.cwd);
-          lastRoundChanged = fpAfter === undefined || fpAfter !== fpBefore;
+          lastRoundChanged = pre && post ? pre.tree !== post.tree : fpAfter === undefined || fpAfter !== fpBefore;
 
           /* ---- VERIFY (harness, ground truth) ---- */
           if (verifyCmd && (lastRoundChanged || !st.lastVerify || st.lastVerify.fingerprint !== fpAfter)) {
@@ -465,8 +536,18 @@ export default function wf(pi: ExtensionAPI) {
             st.lastVerify = { ok: null, command: null, summary: "No verify command configured.", at: now() };
           }
 
-          if (report.status === "done" && st.lastVerify?.ok !== false) next.status = "done";
+          // A flagged round can't complete its task, whatever the report says.
+          if (report.status === "done" && st.lastVerify?.ok !== false && !flags.length) next.status = "done";
           st.lastReport = { ...report, task: next.id, changed: lastRoundChanged };
+          if (pre && post && entry) {
+            const d = diffSummary(ctx.cwd, pre.commit, post.commit, 3000);
+            const flagLines = flags.map((f) => `${f.kind}: ${f.detail}`);
+            st.lastRound = { round: n, task: next.id, stat: d.stat, patch: d.patch, flags: flagLines };
+            entry.files = changedPaths(ctx.cwd, pre.commit, post.commit);
+            const v = st.lastVerify?.ok === true ? "✓" : st.lastVerify?.ok === false ? "✗" : "–";
+            entry.summary = `${next.id} ${report.status} · ${d.files} files +${d.added} −${d.removed} · verify ${v}${flags.length ? " · ⚑ " + flags.map((f) => f.kind).join(", ") : ""} · ${cap(report.summary.replace(/\s+/g, " "), 60)}`;
+            led.saveCheckpoints(cps);
+          } else st.lastRound = undefined;
           lastPicked = next.id;
           led.saveTasks(tasks);
 
@@ -481,11 +562,25 @@ export default function wf(pi: ExtensionAPI) {
               `Manager: ${dec?.rationale ?? "(fallback)"}\n` +
               `Worker: ${report.status} — ${report.summary}\n` +
               (assumptions.length ? `Assumptions: ${assumptions.join("; ")}\n` : "") +
+              (flags.length ? `Harness flags: ${flags.map((f) => `${f.kind}: ${f.detail}`).join("; ")}\n` : "") +
               `Verify: ${st.lastVerify?.summary.split("\n")[0] ?? "-"}\n` +
               `Changed files this round: ${lastRoundChanged ? "yes" : "no"} · cost $${(mres.cost + wres.cost).toFixed(4)}\n`,
           );
           led.saveState(st);
 
+          if (pauseAfter) {
+            st.pause = pauseAfter;
+            outcome = "paused";
+            break;
+          }
+          if (tamper && (st.tamper?.[next.id] ?? 0) >= 2) {
+            const q = `${next.id}'s worker changed existing tests again: ${tamper.detail}\n\nHow should it proceed? (e.g. "the tests are right, fix the code", or allow one specific test change and say why)`;
+            if (!(await askHuman(q, "harness", next.id, "tampering"))) {
+              outcome = "paused";
+              break;
+            }
+            st.tamper![next.id] = 0;
+          }
           if (report.status === "needs_input" && report.question && cfg.questions === "ask") {
             if (!(await askHuman(report.question, "worker", next.id))) {
               outcome = "paused";
@@ -497,6 +592,7 @@ export default function wf(pi: ExtensionAPI) {
         outcome = "error";
         outcomeNote = (e as Error).message;
       } finally {
+        busy = false;
         unsubEsc?.();
         ctx.ui.setWidget("wf", undefined);
         ctx.ui.setStatus("wf", undefined);
@@ -516,9 +612,14 @@ export default function wf(pi: ExtensionAPI) {
         aborted: "⏹ BUILD STOPPED — by you",
         error: "⚠ BUILD ERROR",
       };
+      const pauseTip = { attempts: "paused-attempts", "lost-work": "paused-lost-work", tampering: "paused-tampering" } as const;
       const tipKey =
-        outcome === "paused" ? (st.pause?.from === "harness" && st.pause.task ? "paused-attempts" : "paused-question") : outcome;
-      const whatNow = tip(`build.${tipKey}`, { task: st.pause?.task ?? "", max: cfg.maxTaskAttempts, rounds: cfg.maxRounds });
+        outcome === "paused"
+          ? st.pause?.from === "harness" && st.pause.task
+            ? pauseTip[st.pause.kind ?? "attempts"]
+            : "paused-question"
+          : outcome;
+      const whatNow = tip(`build.${tipKey}`, { task: st.pause?.task ?? "", max: cfg.maxTaskAttempts, rounds: cfg.maxRounds, round: st.lastRound?.round ?? "" });
       post(
         [
           `**${headline[outcome]}**${outcomeNote ? ` — ${outcomeNote}` : ""}`,
@@ -528,6 +629,7 @@ export default function wf(pi: ExtensionAPI) {
           "```",
           `Verification: ${st.lastVerify?.summary.split("\n")[0] ?? "not run"}`,
           assumptionsThisRun.length ? `\nAssumptions made (review these):\n${assumptionsThisRun.map((a) => `- ${a}`).join("\n")}` : "",
+          flagsThisRun.length ? `\n⚑ Harness flags (a flagged round can't complete its task):\n${flagsThisRun.map((f) => `- ${f}`).join("\n")}` : "",
           st.pause && outcome !== "stalled" ? `\nOpen question: ${st.pause.question}` : "",
           `\nThis run: $${runCost.total.toFixed(3)} · feature total: ${st.roundsTotal} rounds, $${st.costTotal.toFixed(3)}`,
           `\n${whatNow}`,
@@ -558,6 +660,7 @@ export default function wf(pi: ExtensionAPI) {
         ctx.mode === "tui"
           ? ctx.ui.onTerminalInput((d) => (d === "\x1b" ? (abort.abort(), { consume: true }) : undefined))
           : undefined;
+      busy = true;
       try {
         // Refresh ground truth if the tree changed since the last verification.
         const verifyCmd = resolveVerify(cfg.verify, ctx.cwd);
@@ -617,6 +720,7 @@ export default function wf(pi: ExtensionAPI) {
           ].join("\n"),
         );
       } finally {
+        busy = false;
         unsubEsc?.();
         ctx.ui.setWidget("wf", undefined);
       }
@@ -647,10 +751,114 @@ export default function wf(pi: ExtensionAPI) {
         `verify: ${resolveVerify(cfg.verify, ctx.cwd) ?? "(none)"} → ${st.lastVerify ? (st.lastVerify.ok === null ? "n/a" : st.lastVerify.ok ? "PASS" : "FAIL") : "not run"}`,
         ...(loaded.ok ? loaded.tasks.map(taskLine) : [`tasks: ${loaded.error}`]),
         ...(st.pause ? [`pending: ${st.pause.question.split("\n")[0]}`] : []),
+        ...(led.checkpoints().some((c) => c.task) ? [`checkpoints: ${led.checkpoints().filter((c) => c.task).length} rounds · /${cmd("undo")} to go back`] : []),
         `next: ${phaseNext[st.phase]}`,
         `ledger: ${led.rel("")} · help: /${cmd("help")}`,
       ];
       ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /* --------------------------------- undo -------------------------------- */
+
+  const cpLabel = (c: Checkpoint) =>
+    c.id === "start"
+      ? `⌂ start of build (${c.at})`
+      : c.id.startsWith("u")
+        ? `↺ before undo (${c.at})`
+        : `${c.id}  ${c.summary ?? `${c.task} (round did not finish)`}`;
+
+  pi.registerCommand(cmd("undo"), {
+    description: "Restore the working tree (and task list) to before a build round, picked from a list",
+    handler: async (args, ctx) => {
+      if (busy || !requireIdle(ctx)) return busy ? ctx.ui.notify("A build or review is running. Stop it first (Esc).", "warning") : undefined;
+      const led = new Ledger(ctx.cwd);
+      const st = requireScope(ctx, led);
+      if (!st) return;
+      const cps = led.checkpoints();
+      if (!cps.length) return ctx.ui.notify(`No checkpoints yet: they're taken during /${cmd("build")}.`, "info");
+
+      const newestFirst = [...cps].reverse();
+      const [idArg, ...why] = args.trim().split(/\s+/).filter(Boolean);
+      let target: Checkpoint | undefined;
+      if (idArg) {
+        target = cps.find((c) => c.id.toLowerCase() === idArg.toLowerCase());
+        if (!target) ctx.ui.notify(`No checkpoint "${idArg}".`, "warning");
+      } else if (ctx.hasUI) {
+        const labels = newestFirst.map(cpLabel);
+        const choice = await ctx.ui.select("Restore the working tree to the state BEFORE…", labels);
+        target = choice ? newestFirst[labels.indexOf(choice)] : undefined;
+        if (!target) return;
+      }
+      if (!target) {
+        post(
+          [`**Checkpoints** — restore to the state BEFORE one with \`/${cmd("undo")} <id> [why]\`:`, "", "```", ...newestFirst.map((c) => `${c.id.padEnd(6)} ${cpLabel(c)}`), "```"].join("\n"),
+        );
+        return;
+      }
+
+      const cur = snapshot(ctx.cwd, "wf: before undo");
+      if (!cur) return ctx.ui.notify("Could not snapshot the working tree (is this a git repository?). Nothing was changed.", "error");
+      const files = changedPaths(ctx.cwd, cur.commit, target.commit);
+      const loaded = led.tasks();
+      const curTasks = loaded.ok ? loaded.tasks : [];
+      const taskChanges = curTasks
+        .map((t) => {
+          const old = target!.tasks.find((o) => o.id === t.id);
+          if (!old) return `${t.id} removed (added after that point)`;
+          return old.status !== t.status || (old.attempts ?? 0) !== (t.attempts ?? 0)
+            ? `${t.id}: ${t.status} → ${old.status}${(old.attempts ?? 0) !== (t.attempts ?? 0) ? `, attempts ${old.attempts ?? 0}` : ""}`
+            : "";
+        })
+        .filter(Boolean);
+      const idx = cps.indexOf(target);
+      const undone = cps.slice(idx).filter((c) => c.task).map((c) => c.id);
+      const head = gitHead(ctx.cwd);
+      const summary = [
+        `Files: ${files.length ? `${files.slice(0, 20).join(", ")}${files.length > 20 ? ` … (+${files.length - 20})` : ""}` : "none"}`,
+        `Tasks: ${taskChanges.length ? taskChanges.join("; ") : "unchanged"}`,
+        ...(undone.length ? [`Rounds undone: ${undone.join(", ")}`] : []),
+        ...(target.head && head && target.head !== head
+          ? ["⚠ You committed since then: undo restores files but never moves your branch, so the undone work will show as uncommitted changes against your commit."]
+          : []),
+      ].join("\n");
+      if (ctx.hasUI && !(await ctx.ui.confirm(`Undo to before ${target.id === "start" ? "the build" : target.id}?`, summary))) return;
+      const reason = why.join(" ") || (ctx.hasUI ? ((await ctx.ui.input("Why? (optional: tells the next worker what to avoid)", "")) ?? "").trim() : "");
+
+      restore(ctx.cwd, cur.commit, target.commit);
+      const undoEntry: Checkpoint = {
+        id: `u${cps.filter((c) => c.id.startsWith("u")).length + 1}`,
+        at: now(),
+        ...cur,
+        head,
+        tasks: curTasks,
+        notes: led.read("notes.md"),
+      };
+      // Keep the start anchor; drop the target and everything after it; the state we just left becomes "before undo".
+      led.saveCheckpoints([...cps.slice(0, idx).concat(target.id === "start" ? [target] : []), undoEntry]);
+      led.saveTasks(target.tasks);
+      led.write("notes.md", target.notes);
+
+      const what = undone.length ? `undid ${undone.join(", ")}` : `restored ${target.id}`;
+      led.append("log.md", `\n### Undo (${now()}) — back to before ${target.id}: ${what}${reason ? ` — ${reason}` : ""}\n`);
+      if (undone.length) {
+        led.recordDecision(`The human undid rounds ${undone.join(", ")} (code and task list restored to before ${target.id})${reason ? `: ${reason}` : ""}.`);
+        st.lastReport = { task: target.task ?? "", status: "partial", summary: `The human undid rounds ${undone.join(", ")}.`, changed: true };
+      }
+      st.lastRound = undefined;
+      st.pause = undefined;
+      st.tamper = undefined;
+      if (target.tasks.some((t) => t.status === "todo" || t.status === "doing")) st.phase = "building";
+      led.saveState(st);
+
+      post(
+        [
+          `**↺ Undone to before ${target.id === "start" ? "the build" : target.id}** — ${what}; ${files.length} file(s) restored.`,
+          summary.split("\n").slice(1).join("\n"),
+          "",
+          tip("undo.done", { id: undoEntry.id }),
+        ].join("\n"),
+      );
     },
   });
 
