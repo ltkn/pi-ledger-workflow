@@ -327,7 +327,9 @@ Then commit and open a PR as usual.
 ## Starting the next feature
 
 `/wf:scope <next feature>` moves the current ledger to
-`.pi/wf/archive/<timestamp>/` and starts clean. Your `config.json` stays. Commit
+`.pi/wf-archive/<timestamp>/` and starts clean. Your `config.json` stays. The
+archive sits outside `.pi/wf/` so the next feature's workers never stumble on
+old plans, and it ignores itself in git. Commit
 the previous feature first: the new feature's review diffs against the commit
 it starts from, so anything uncommitted would show up in it.
 <!-- /wf -->

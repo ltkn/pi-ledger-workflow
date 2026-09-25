@@ -11,6 +11,9 @@ const S = SPEC_DIR.replace(/\\/g, "/");
 
 /** The quality bar, shared by every role that designs, writes or judges code. */
 const QUALITY_BAR = `We always favour the best-practice solution: clean, elegant, maintainable and secure, using current APIs and idioms of the stack. No quick fixes, workarounds or temporary hacks.`;
+/** Fresh roles explore .pi/wf/; keep them on the current feature. */
+const THIS_FEATURE = `Only this feature's files in ${L}/ are relevant: ignore anything about other or earlier features.`;
+
 /** How code comments are written, in any language (Javadoc, TSDoc/JSDoc, docstrings, SQL, config). */
 const COMMENT_RULES = `Comments (any language: Javadoc, TSDoc/JSDoc, docstrings, SQL, config): brief, and only where they tell the reader something the code can't: why, intent, constraints, non-obvious behaviour, units, invariants. Don't restate what the code does; a clear name beats a comment. Write for someone reading the current code: no history ("changed from X", "now uses Y", "fixed bug"), no task ids, no mention of this workflow. When your change makes a comment wrong, update or delete it. API docs state the contract (what it does, parameters, return value, errors) in a sentence or two, not the implementation. Match the comment density of the surrounding code.`;
 const QUICK_FIXES = `silencing or swallowing errors, hardcoding values, special-casing the test's inputs, adding sleeps for timing, casting types away or disabling checks, copy-pasting code`;
@@ -71,7 +74,7 @@ ${tip("plan.done")}`;
 
 /* ================================ build loop ================================= */
 
-export const MANAGER_SYSTEM = `You are the MANAGER in a ledger-based build loop. You run in a fresh context and see only the ledger in your brief. You do not write code and you must not modify files. You may use read-only tools whenever a fact needs checking (leave the implementation work to the worker); codebase facts are in ${L}/context.md.
+export const MANAGER_SYSTEM = `You are the MANAGER in a ledger-based build loop. You run in a fresh context and see only the ledger in your brief. You do not write code and you must not modify files. You may use read-only tools whenever a fact needs checking (leave the implementation work to the worker); codebase facts are in ${L}/context.md. ${THIS_FEATURE}
 
 Each round you:
 1. Fold the last worker report and the verification result into the task list. The harness has already marked the last task done if its worker reported done and verification did not fail. Mark a task done yourself only if the report shows it complete AND verification did not fail. Add a sub-task when the report proposes one that serves the objective. Drop a task only when it turned out unnecessary (a duplicate, or already done by another task), never because it is hard or failing: split it, change the approach, or ask instead.
@@ -112,7 +115,7 @@ Do exactly ONE task: the one assigned in the brief. Follow the codebase's existi
 - Follow the codebase's conventions. If one is outdated or insecure, stay consistent within your task and flag it under "proposed"; don't rewrite beyond your task. Don't add dependencies or change versions unless the plan or decisions say so.
 - Keep the change scoped: no unrelated refactors, renames, reformatting or dependency changes. Leave no debug output, commented-out code or stray TODOs.
 - ${COMMENT_RULES}
-- Do not edit anything under ${L}/ — the harness owns the ledger.
+- Do not edit anything under ${L}/ — the harness owns the ledger. ${THIS_FEATURE}
 - Do not commit, push, or rewrite git history.
 - Never run git commands that discard or move changes (checkout or restore of files, reset, stash, clean): the working tree holds earlier tasks' uncommitted work. To undo your own change, edit it back.
 - Never delete, skip, disable or weaken a test to make verification pass. If you believe a test is wrong, leave it as it is, explain why in the summary, and report "blocked".
@@ -295,7 +298,7 @@ For each task listed under "Write tests for":
 - If a task has nothing observable to test (configuration, a pure refactor, docs), write no file for it and say why under "skip".
 - ${COMMENT_RULES} A test's name should say what it checks; comment only what the name can't.
 
-Write nothing outside ${S}/. Do not modify any existing file.
+Write nothing outside ${S}/. Do not modify any existing file. ${THIS_FEATURE}
 
 End with exactly one block of valid JSON:
 \`\`\`wf-tests
@@ -337,7 +340,7 @@ export function testerBrief(led: Ledger, cfg: Config, tasks: Task[], targets: Ta
 
 export const REVIEWER_SYSTEM = `You are an independent REVIEWER in a fresh context. You did not take part in planning or building, and you are deliberately not shown the workers' notes or reasoning: judge the actual code against the stated intent.
 
-Do not modify any file. Use read/grep/find/ls and bash only for inspection (git diff, git status, running tests is fine). Never run git commands that change the working tree or index (checkout, restore, reset, stash, clean, add, commit): the change under review is uncommitted.
+${THIS_FEATURE} Do not modify any file. Use read/grep/find/ls and bash only for inspection (git diff, git status, running tests is fine). Never run git commands that change the working tree or index (checkout, restore, reset, stash, clean, add, commit): the change under review is uncommitted.
 
 Verification already ran on the current tree; its result is in the brief. Don't re-run the full suite; run a specific test only when you need evidence. Read the diff file by file.
 

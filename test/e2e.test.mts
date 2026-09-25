@@ -291,6 +291,9 @@ test("/wf:stats: feature card with reliability and tokens per role; all features
   assert.match(card, /\ntotal /);
 
   await t.run("scope", "Next feature"); // archives the first one
+  assert.ok(!fs.existsSync(path.join(t.repo, ".pi/wf/archive"))); // the ledger holds only the current feature
+  assert.equal(fs.readdirSync(path.join(t.repo, ".pi/wf-archive")).filter((d) => d !== ".gitignore").length, 1);
+  assert.doesNotMatch(execSync("git status --porcelain", { cwd: t.repo, encoding: "utf8" }), /wf-archive/); // ignores itself
   await t.run("stats", "all");
   const all = t.posts.at(-1)!;
   if (process.env.SHOW_STATS) console.log(all);
@@ -373,4 +376,15 @@ test("no caps by default: old default caps are migrated away, chosen caps are ke
   const brief = workerBrief(led, led.config(), {} as any, { id: "T1", title: "t", status: "doing", attempts: 1 }, "", null);
   assert.match(brief, /xEND/);
   assert.doesNotMatch(brief, /truncated/);
+});
+
+test("an old .pi/wf/archive is moved out of the ledger", async () => {
+  const { Ledger } = await import("../extensions/wf/ledger.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-archive-"));
+  fs.mkdirSync(path.join(dir, ".pi/wf/archive/2026-01-01T00-00-00"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".pi/wf/archive/2026-01-01T00-00-00/state.json"), "{}");
+  new Ledger(dir);
+  assert.ok(!fs.existsSync(path.join(dir, ".pi/wf/archive")));
+  assert.ok(fs.existsSync(path.join(dir, ".pi/wf-archive/2026-01-01T00-00-00/state.json")));
+  assert.equal(fs.readFileSync(path.join(dir, ".pi/wf-archive/.gitignore"), "utf8"), "*\n");
 });

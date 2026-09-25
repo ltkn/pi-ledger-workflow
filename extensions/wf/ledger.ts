@@ -10,6 +10,8 @@ import * as path from "node:path";
 
 export const PREFIX = "wf";
 export const LEDGER_DIR = path.join(".pi", "wf");
+/** Finished features live outside the ledger, so fresh roles exploring .pi/wf/ only ever see the current one. */
+export const ARCHIVE_DIR = path.join(".pi", "wf-archive");
 const LEDGER_PATHSPEC = ":(exclude).pi/wf";
 
 export type TaskStatus = "todo" | "doing" | "done" | "dropped";
@@ -214,8 +216,30 @@ export function now(): string {
 
 export class Ledger {
   readonly root: string;
+  readonly archiveRoot: string;
   constructor(readonly cwd: string) {
     this.root = path.join(cwd, LEDGER_DIR);
+    this.archiveRoot = path.join(cwd, ARCHIVE_DIR);
+    this.migrateArchive();
+  }
+
+  /** Before 0.3 the archive was .pi/wf/archive/; move it out of the ledger. */
+  private migrateArchive(): void {
+    const legacy = path.join(this.root, "archive");
+    if (!fs.existsSync(legacy)) return;
+    this.ensureArchive();
+    for (const f of fs.readdirSync(legacy)) {
+      const dest = path.join(this.archiveRoot, fs.existsSync(path.join(this.archiveRoot, f)) ? `${f}-moved` : f);
+      fs.renameSync(path.join(legacy, f), dest);
+    }
+    fs.rmSync(legacy, { recursive: true, force: true });
+  }
+
+  /** The archive ignores itself in git, so no project .gitignore change is needed. */
+  private ensureArchive(): void {
+    fs.mkdirSync(this.archiveRoot, { recursive: true });
+    const ignore = path.join(this.archiveRoot, ".gitignore");
+    if (!fs.existsSync(ignore)) fs.writeFileSync(ignore, "*\n");
   }
 
   p(name: string): string {
@@ -339,10 +363,11 @@ export class Ledger {
   archive(): string | undefined {
     if (!fs.existsSync(this.root)) return;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const dest = path.join(this.root, "archive", stamp);
+    this.ensureArchive();
+    const dest = path.join(this.archiveRoot, stamp);
     fs.mkdirSync(dest, { recursive: true });
     for (const f of fs.readdirSync(this.root)) {
-      if (f === "archive" || f === "config.json") continue;
+      if (f === "config.json") continue;
       fs.renameSync(path.join(this.root, f), path.join(dest, f));
     }
     return dest;

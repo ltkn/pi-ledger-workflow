@@ -5,7 +5,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type CallEvent, LEDGER_DIR, type RoundEvent, type State, type Task, type WfEvent } from "./ledger.ts";
+import { ARCHIVE_DIR, type CallEvent, LEDGER_DIR, type RoundEvent, type State, type Task, type WfEvent } from "./ledger.ts";
 import type { Spec } from "./spec.ts";
 
 export interface FeatureData {
@@ -50,9 +50,15 @@ export function loadFeature(dir: string): FeatureData | undefined {
 /** Archived features (oldest first) then the current one; `skipped` counts those without stats. */
 export function loadAll(cwd: string): { features: FeatureData[]; skipped: number } {
   const root = path.join(cwd, LEDGER_DIR);
-  const archive = path.join(root, "archive");
+  const archive = path.join(cwd, ARCHIVE_DIR);
   const dirs = [
-    ...(fs.existsSync(archive) ? fs.readdirSync(archive).sort().map((d) => path.join(archive, d)) : []),
+    ...(fs.existsSync(archive)
+      ? fs
+          .readdirSync(archive, { withFileTypes: true })
+          .filter((d) => d.isDirectory())
+          .map((d) => path.join(archive, d.name))
+          .sort()
+      : []),
     ...(fs.existsSync(path.join(root, "state.json")) ? [root] : []),
   ];
   const features: FeatureData[] = [];
