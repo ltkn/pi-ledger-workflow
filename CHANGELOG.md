@@ -14,6 +14,12 @@
   - explicit precedence when sources disagree: newest decision > manager instruction > task detail > plan
   - the cut-off summarizer always reports "partial" (it can't see tool results) and gets the task's acceptance
   - `/wf:plan` re-runs replace reversed decisions and keep task ids, status, attempts and source
+- Prompts improved for smaller models:
+  - worker: defined statuses, a stop rule (same error three times → report partial/blocked), read-before-edit steps, no debug leftovers, fixed notes headings, calibrated assumptions/proposals; its brief now names the verify command, the attempt number and the previous attempt at the same task
+  - manager: structured `instruction`, escalation after 2 unsuccessful rounds, a tool budget, may ask when verification fails for unrelated reasons
+  - reviewer: acceptance criteria checked one by one with evidence, calibrated `changes_needed`, no full re-run of the suite
+  - scope records the test baseline (pass/fail, duration, pre-existing failures) and the targeted-test command; plan asks for smaller tasks with self-checkable acceptance
+  - every fresh call ends with a role-specific instruction naming the block it must end with
 - Fix: answering an attempt-limit pause with `/wf:build <guidance>` now resets the task's attempts (it used to re-ask immediately); plain `/wf:build` prompts for the answer
 
 ## 0.1.0

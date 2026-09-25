@@ -127,3 +127,17 @@ test("manager cannot finish before any work happened (empty workspace)", async (
   assert.doesNotMatch(t.posts.at(-1)!, /BUILD COMPLETE/);
   assert.match(t.read("log.md"), /finish vetoed \(unfinished tasks\)/);
 });
+
+test("prompts: placeholders filled; worker brief has the verify command and the previous attempt", async () => {
+  const { managerSystem, workerSystem, workerBrief } = await import("../extensions/wf/prompts.ts");
+  const { DEFAULT_CONFIG } = await import("../extensions/wf/ledger.ts");
+  for (const p of [managerSystem(DEFAULT_CONFIG), workerSystem(DEFAULT_CONFIG)]) assert.doesNotMatch(p, /ATTEMPT_LIMIT|QUESTION_POLICY|NOTES_CAP/);
+
+  const led: any = { read: () => "" };
+  const st: any = { lastReport: { task: "T2", status: "partial", summary: "records done, tests remain" } };
+  const brief = workerBrief(led, DEFAULT_CONFIG, st, { id: "T2", title: "t", status: "doing", attempts: 2 }, "", "mvn -q test");
+  assert.match(brief, /attempt 2 of 4/);
+  assert.match(brief, /`mvn -q test`/);
+  assert.match(brief, /## Previous attempt at this task\n\npartial: records done, tests remain/);
+  assert.doesNotMatch(workerBrief(led, DEFAULT_CONFIG, st, { id: "T3", title: "t", status: "doing", attempts: 1 }, "", null), /Previous attempt/);
+});

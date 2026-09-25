@@ -125,7 +125,7 @@ export default function wf(pi: ExtensionAPI) {
       led.saveState(newState(feature, gitHead(ctx.cwd)));
       const verify = resolveVerify(cfg.verify, ctx.cwd);
       if (!verify) ctx.ui.notify(`No verify command detected. Set "verify" in ${led.rel("config.json")} (e.g. "mvn -B -q test").`, "warning");
-      instruct(`▶ /${cmd("scope")} — ${feature}`, scopePrompt(feature));
+      instruct(`▶ /${cmd("scope")} — ${feature}`, scopePrompt(feature, verify));
     },
   });
 
@@ -314,6 +314,7 @@ export default function wf(pi: ExtensionAPI) {
             role: "manager",
             systemPrompt: managerSystem(cfg),
             brief: managerBrief(led, cfg, st, tasks, round, cfg.maxRounds),
+            prompt: "Carry out the brief in the attached file. End with the wf-manage block.",
             tools: READ_ONLY,
             model: roleModel(ctx, cfg, "manager"),
             thinking: roleThinking(ctx, cfg, "manager"),
@@ -399,7 +400,8 @@ export default function wf(pi: ExtensionAPI) {
             cwd: ctx.cwd,
             role: "worker",
             systemPrompt: workerSystem(cfg),
-            brief: workerBrief(led, cfg, st, next, dec?.instruction ?? ""),
+            brief: workerBrief(led, cfg, st, next, dec?.instruction ?? "", verifyCmd),
+            prompt: `Carry out the brief in the attached file: do only task ${next.id}. End with the wf-notes and wf-report blocks.`,
             tools: cfg.workerTools,
             model: roleModel(ctx, cfg, "worker"),
             thinking: roleThinking(ctx, cfg, "worker"),
@@ -426,6 +428,7 @@ export default function wf(pi: ExtensionAPI) {
               role: "summarizer",
               systemPrompt: SUMMARIZER_SYSTEM,
               brief: summarizerBrief(led, cfg, next, wres.transcript || wres.error || "(no output)"),
+            prompt: "Summarise the attempt in the attached file. Output only the wf-notes and wf-report blocks.",
               tools: null,
               model: roleModel(ctx, cfg, "worker"),
               thinking: "low",
@@ -570,6 +573,7 @@ export default function wf(pi: ExtensionAPI) {
           cwd: ctx.cwd,
           role: "reviewer",
           systemPrompt: REVIEWER_SYSTEM,
+          prompt: "Review the change described in the attached file. End with the wf-review block.",
           brief: reviewerBrief(led, st, tasks, changedSinceBase(ctx.cwd, st.baseCommit), diffStat(ctx.cwd, st.baseCommit), args.trim()),
           tools: [...READ_ONLY, "bash"],
           model: roleModel(ctx, cfg, "reviewer"),

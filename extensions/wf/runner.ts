@@ -13,6 +13,8 @@ export interface RunOptions {
   role: string;
   systemPrompt: string;
   brief: string;
+  /** The user message sent with the attached brief; says what to do and which block to end with. */
+  prompt?: string;
   /** null = no tools at all */
   tools: string[] | null;
   model?: string;
@@ -67,7 +69,7 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
   if (o.thinking) args.push("--thinking", o.thinking);
   if (o.tools === null) args.push("--no-tools");
   else args.push("--tools", o.tools.join(","));
-  args.push("--append-system-prompt", sysFile, `@${briefFile}`, "Carry out the brief in the attached file.");
+  args.push("--append-system-prompt", sysFile, `@${briefFile}`, o.prompt ?? "Carry out the brief in the attached file.");
 
   const res: RunResult = { text: "", exitCode: 0, cost: 0, turns: 0, transcript: "", aborted: false };
   const transcript: string[] = [];
