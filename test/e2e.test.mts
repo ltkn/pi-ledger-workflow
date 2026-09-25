@@ -14,6 +14,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 process.env.PI_WF_PI_COMMAND = path.join(here, "mock-pi.mjs");
 const { default: wf } = await import("../extensions/wf/index.ts");
 
+// p/cheap has a tiny window so the mock's 2000-token prompts fill 83% of it.
+const MODELS = [
+  { provider: "p", id: "m", contextWindow: 100000 },
+  { provider: "p", id: "strong", contextWindow: 200000 },
+  { provider: "p", id: "cheap", contextWindow: 2400 },
+  { provider: "p", id: "nokey", contextWindow: 100000 },
+];
+
 function setup(scenario: string, config: object, tasks: object[], plan = "plan") {
   process.env.MOCK_SCENARIO = scenario;
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -29,7 +37,12 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
     sendMessage: (m: any) => m.display && posts.push(m.content),
   } as any);
   const ctx: any = {
-    cwd: repo, mode: "print", hasUI: true, isIdle: () => true, model: { provider: "p", id: "m" }, thinkingLevel: "low",
+    cwd: repo, mode: "print", hasUI: true, isIdle: () => true, model: { provider: "p", id: "m", contextWindow: 100000 }, thinkingLevel: "low",
+    modelRegistry: {
+      getAll: () => MODELS,
+      getAvailable: () => MODELS.filter((m) => m.id !== "nokey"),
+      find: (p: string, id: string) => MODELS.find((m) => m.provider === p && m.id === id),
+    },
     ui: { notify: () => {}, setWidget: () => {}, setStatus: () => {}, confirm: async () => confirms.shift() ?? true,
       select: async (_t: string, opts: string[]) => selects.shift() ?? opts[0],
       input: async () => answers.shift() ?? "", onTerminalInput: () => () => {} },
@@ -45,9 +58,9 @@ function setup(scenario: string, config: object, tasks: object[], plan = "plan")
   return { cmds, posts, answers, confirms, selects, repo, run, read, init };
 }
 
-test("registers the nine commands", () => {
+test("registers the ten commands", () => {
   const { cmds } = setup("happy", {}, []);
-  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:plan", "wf:review", "wf:scope", "wf:stats", "wf:status", "wf:tests", "wf:undo"]);
+  assert.deepEqual(Object.keys(cmds).sort(), ["wf:build", "wf:help", "wf:models", "wf:plan", "wf:review", "wf:scope", "wf:stats", "wf:status", "wf:tests", "wf:undo"]);
 });
 
 test("/wf:help lists topics and shows one", async () => {
@@ -262,7 +275,7 @@ test("/wf:stats: feature card with reliability and tokens per role; all features
   assert.match(card, /reports 3 ok, 1 resumed, 0 salvaged, 0 lost · manager decisions missing 0\/\d+/);
   assert.match(card, /\nresume +1 /);
   assert.match(card, /Review +changes_needed \(1 R-tasks\)/);
-  assert.match(card, /\nworker +4 +2\.0k +2\.0k +8\.0k +600 +40%/); // 4 calls · peak 2.0k · prompt 4×2000 · output 4×150 · 800/2000 cached
+  assert.match(card, /\nworker +4 +2\.0k 2% +2\.0k +8\.0k +600 +40%/); // 4 calls · peak 2.0k · prompt 4×2000 · output 4×150 · 800/2000 cached
   assert.match(card, /\ntotal /);
 
   await t.run("scope", "Next feature"); // archives the first one
@@ -285,4 +298,46 @@ test("missing report: resume fails → summarizer fallback; sessions are always 
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
   assert.match(t.read("log.md"), /partial — salvaged/); // summarizer used; its "done" downgraded
   assert.deepEqual(sessions(), before);
+});
+
+test("/wf:models: presets and single roles, unknown models refused", async () => {
+  const t = setup("happy", {}, []);
+  await t.run("scope", "x");
+  const cfg = () => JSON.parse(t.read("config.json"));
+  await t.run("models", "mixed p/strong p/cheap");
+  assert.deepEqual(cfg().models, { manager: "p/strong", reviewer: "p/strong", tester: "p/strong", worker: "p/cheap" });
+  assert.deepEqual(cfg().escalate, { afterAttempts: 2, model: "p/strong" });
+  assert.match(t.posts.at(-1)!, /- worker: p\/cheap · 2k context/);
+  await t.run("models", "worker p/nope"); // refused: unknown
+  assert.equal(cfg().models.worker, "p/cheap");
+  await t.run("models", "worker session");
+  assert.equal(cfg().models.worker, undefined);
+  await t.run("models", "single");
+  assert.deepEqual(cfg().models, {});
+  assert.equal(cfg().escalate, null);
+});
+
+test("build refuses a model Pi can't use", async () => {
+  const t = setup("happy", { verify: null, models: { worker: "p/nokey" } }, [{ id: "T1", title: "a" }]);
+  await t.init();
+  await t.run("build");
+  assert.match(t.posts.at(-1)!, /Can't build: model setup[\s\S]*worker: "p\/nokey" has no credentials/);
+  assert.equal(JSON.parse(t.read("state.json")).roundsTotal, 0);
+});
+
+test("escalation moves a failing task to the strong model; nearly full context is warned about", async () => {
+  const t = setup("stuck", { verify: null, maxTaskAttempts: 3, models: { worker: "p/cheap" }, escalate: { afterAttempts: 1, model: "p/strong" } }, [{ id: "T1", title: "a" }]);
+  await t.init();
+  await t.run("build"); // attempt 1 on p/cheap, attempts 2–3 on p/strong, then the attempt limit pauses
+  const out = t.posts.at(-1)!;
+  assert.match(out, /↑ Escalated to the stronger model:\n- T1 attempt 2 → p\/strong\n- T1 attempt 3 → p\/strong/);
+  assert.match(out, /⚠ Context nearly full[\s\S]*worker T1 \(p\/cheap\): peak context 2\.0k = 83% of its 2\.4k window/);
+  const workers = t.read("events.jsonl").split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.type === "call" && e.role === "worker");
+  assert.deepEqual(workers.map((e) => e.model), ["p/cheap", "p/strong", "p/strong"]);
+  assert.match(t.read("log.md"), /Worker \(escalated to p\/strong\)/);
+
+  await t.run("stats");
+  const card = t.posts.at(-1)!;
+  assert.match(card, /escalated 2 \(0 finished their task\)/);
+  assert.match(card, /\nworker +3 +2\.0k 83%/);
 });

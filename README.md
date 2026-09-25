@@ -17,13 +17,14 @@ see [Credits](#credits).
 /wf:review [focus]    independent review of the diff        fresh context
 /wf:status            where things stand
 /wf:stats [all]       rounds, reliability, tokens/context per role; all = compare by model
+/wf:models [preset]   which model plays which role: single, mixed, escalation
 /wf:undo [round]      go back to before a build round (picked from a list)
 /wf:help [topic]      what to do next, and how to handle edge cases
 ```
 
 `wf` = workflow. The `name:verb` form mirrors Pi's own `/skill:name`, can't
 collide with built-ins or other extensions' `/plan`, and typing `/wf` lists
-all nine commands.
+all ten commands.
 
 **Day-to-day guide:** [`workflow-help.md`](extensions/wf/workflow-help.md)
 covers the normal path and what to do when a task keeps failing, the build
@@ -150,7 +151,8 @@ its task), and lets `/wf:undo` restore any earlier state. See
 | `verifyTimeoutSec` | 900 | |
 | `questions` | `"ask"` | or `"assume"` |
 | `caps` | plan 4000, notes 8000, context 6000, verifyOutput 4000 | chars fed into briefs |
-| `models` | `{}` | `{"manager": "…", "worker": "…", "reviewer": "…", "tester": "…"}` as `provider/model`; unset = your session's model |
+| `models` | `{}` | `{"manager": "…", "worker": "…", "reviewer": "…", "tester": "…"}` as `provider/model`; unset = your session's model. Easiest via `/wf:models` |
+| `escalate` | null | `{"afterAttempts": 2, "model": "provider/model"}`: a task that failed that often moves to this model (set by `/wf:models mixed`) |
 | `thinking` | `{}` | per role; unset = your session's level |
 | `childExtensions` | false | load your other extensions in fresh workers |
 | `workerTools` | read,bash,edit,write,grep,find,ls | |
@@ -206,10 +208,15 @@ Settings that matter for a local model:
 - **Thinking level per role.** Start with `"thinking": {"manager": "low",
   "worker": "medium", "reviewer": "high"}` and adjust.
 - **Smaller tasks.** Ask `/wf:plan` for 5–8 small tasks rather than 3 large ones.
-- **Mixed models are possible.** For example, a stronger model for the
-  main session (scope/plan) and review, the local model for manager/worker
-  rounds. The paper used one model for every role, so this goes beyond its
-  evidence.
+- **Mixed models.** `/wf:models mixed <strong> <local>` puts a stronger model
+  on the tester, manager and reviewer and the local model on the worker, with
+  escalation: a task that fails twice on the local model gets its next attempts
+  on the strong one. Use a strong model for your main session (scope/plan) too.
+  The paper used one model for every role, so this goes beyond its evidence;
+  compare setups on your own work with `/wf:stats all`. See
+  [`/wf:help models`](extensions/wf/workflow-help.md#choosing-models).
+- **Context window warnings.** wf warns when a call uses over 80% of its
+  model's window, and `/wf:stats` shows each role's peak as a share of it.
 - Workers that end without their report are resumed in their own session and
   asked for it (with their full context, read-only); only if that fails does a
   fresh summarizer salvage the attempt. `/wf:stats` shows how often each

@@ -8,6 +8,7 @@
  *   /wf:review [focus]    independent review           (fresh context)
  *   /wf:status            where things stand
  *   /wf:stats [all]       numbers for this feature, or every feature by model
+ *   /wf:models [preset]   which model plays which role (single / mixed, escalation)
  *   /wf:undo [id]         restore the working tree to before a build round
  *   /wf:help [topic]      what to do next, and how to handle edge cases
  *
@@ -58,6 +59,7 @@ import {
   workerSystem,
 } from "./prompts.ts";
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
+import { ROLES, availableModels, contextWindow, findModel, modelLabel, validateModels } from "./models.ts";
 import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
 import { type Spec, parkedFiles, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
 import { loadAll, loadFeature, renderAll, renderCard } from "./stats.ts";
@@ -91,16 +93,25 @@ export default function wf(pi: ExtensionAPI) {
     pi.sendMessage({ customType: "wf-instruction", content: prompt, display: false }, { triggerTurn: true });
   };
 
-  /** Stats: record one fresh call. */
+  const kilo = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
+
+  /** Stats: record one fresh call. Returns a warning when the call filled most of its model's context window. */
   const recordCall = (
+    ctx: ExtensionCommandContext,
     led: LedgerT,
     role: string,
     res: { cost: number; ms: number; turns: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; peakContext: number } },
     model: string | undefined,
     thinking: string | undefined,
-    extra: { round?: number; task?: string; decided?: boolean } = {},
-  ) =>
-    led.event({ type: "call", at: now(), role, model, thinking, cost: res.cost, ms: res.ms, turns: res.turns, ...res.tokens, ...extra });
+    extra: { round?: number; task?: string; decided?: boolean; escalated?: boolean } = {},
+  ): string | undefined => {
+    const window = contextWindow(ctx, model) ?? (model === sessionModel(ctx) ? contextWindow(ctx, undefined) : undefined);
+    led.event({ type: "call", at: now(), role, model, thinking, cost: res.cost, ms: res.ms, turns: res.turns, ...res.tokens, ...extra, window });
+    const peak = res.tokens.peakContext;
+    if (window && peak > 0.8 * window)
+      return `${role}${extra.task ? ` ${extra.task}` : ""} (${model ?? "session model"}): peak context ${kilo(peak)} = ${Math.round((100 * peak) / window)}% of its ${kilo(window)} window`;
+    return undefined;
+  };
 
   const sessionModel = (ctx: ExtensionCommandContext) => (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);
   const roleModel = (ctx: ExtensionCommandContext, cfg: Config, role: keyof Config["models"]) => cfg.models[role] ?? sessionModel(ctx);
@@ -190,6 +201,8 @@ export default function wf(pi: ExtensionAPI) {
       let tasks = loaded.tasks;
       const cfg = led.config();
       const verifyCmd = resolveVerify(cfg.verify, ctx.cwd);
+      const modelProblems = validateModels(ctx, cfg);
+      if (modelProblems.length) return post(`**Can't build: model setup**\n\n${modelProblems.map((p) => `- ${p}`).join("\n")}\n\nFix with \`/${cmd("models")}\`.`);
 
       // Spec tests: on whenever a verify command exists. Never skipped silently: ask once per feature.
       const specOn = cfg.specTests && !!verifyCmd;
@@ -298,6 +311,9 @@ export default function wf(pi: ExtensionAPI) {
         }
       }
       const flagsThisRun: string[] = [];
+      const windowWarnings = new Set<string>();
+      const escalationsThisRun: string[] = [];
+      const warn = (w: string | undefined) => w && windowWarnings.add(w);
 
       const firstUnfinished = () => tasks.find((t) => t.status === "doing") ?? tasks.find((t) => t.status === "todo");
 
@@ -407,7 +423,7 @@ export default function wf(pi: ExtensionAPI) {
             break;
           }
           const dec = extractJson<ManageDecision>(mres.text, "wf-manage");
-          recordCall(led, "manager", mres, roleModel(ctx, cfg, "manager"), roleThinking(ctx, cfg, "manager"), { round: st.roundsTotal, decided: !!dec });
+          warn(recordCall(ctx, led, "manager", mres, roleModel(ctx, cfg, "manager"), roleThinking(ctx, cfg, "manager"), { round: st.roundsTotal, decided: !!dec }));
           if (!dec) {
             // Paper: "none named → first unfinished task".
             led.append("log.md", `\n### Round ${st.roundsTotal} (${now()}) — manager produced no decision${mres.error ? `: ${cap(mres.error, 300)}` : ""}; falling back to first unfinished task\n`);
@@ -485,8 +501,13 @@ export default function wf(pi: ExtensionAPI) {
             cps.push(entry);
             led.saveCheckpoints(cps);
           }
+          // Escalation: once a task has failed `afterAttempts` times on the worker model, the stronger model takes over.
+          const escalated = !!cfg.escalate && (next.attempts ?? 0) > cfg.escalate.afterAttempts;
+          const workerModel = escalated ? cfg.escalate!.model : roleModel(ctx, cfg, "worker");
+          if (escalated) escalationsThisRun.push(`${next.id} attempt ${next.attempts} → ${workerModel}`);
+          const workerPhase = `worker ${next.id}${escalated ? " ↑" : ""}`;
           activity = "";
-          render(round, `worker ${next.id}`);
+          render(round, workerPhase);
           sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-wf-session-"));
           const session = { dir: sessionDir, id: `wf-r${n}-${next.id}` };
           const wres = await runFresh({
@@ -497,13 +518,13 @@ export default function wf(pi: ExtensionAPI) {
             brief: workerBrief(led, cfg, st, next, dec?.instruction ?? "", verifyCmd, liveSpec),
             prompt: `Carry out the brief in the attached file: do only task ${next.id}. End with the wf-notes and wf-report blocks.`,
             tools: cfg.workerTools,
-            model: roleModel(ctx, cfg, "worker"),
+            model: workerModel,
             thinking: roleThinking(ctx, cfg, "worker"),
             childExtensions: cfg.childExtensions,
             signal: abort.signal,
             onActivity: (a) => {
               activity = `worker: ${a}`;
-              render(round, `worker ${next!.id}`);
+              render(round, workerPhase);
             },
           });
           addCost(wres.cost);
@@ -513,7 +534,7 @@ export default function wf(pi: ExtensionAPI) {
             break;
           }
 
-          recordCall(led, "worker", wres, roleModel(ctx, cfg, "worker"), roleThinking(ctx, cfg, "worker"), { round: n, task: next.id });
+          warn(recordCall(ctx, led, "worker", wres, workerModel, roleThinking(ctx, cfg, "worker"), { round: n, task: next.id, escalated }));
           let reportSource: RoundEvent["report"] = "ok";
           let report = extractJson<WorkerReport>(wres.text, "wf-report");
           let notes = extractBlock(wres.text, "wf-notes") ?? report?.notes;
@@ -528,13 +549,13 @@ export default function wf(pi: ExtensionAPI) {
               systemPrompt: workerSystem(cfg),
               prompt: RESUME_PROMPT,
               tools: READ_ONLY,
-              model: roleModel(ctx, cfg, "worker"),
+              model: workerModel,
               thinking: roleThinking(ctx, cfg, "worker"),
               childExtensions: cfg.childExtensions,
               signal: abort.signal,
             });
             addCost(rres.cost);
-            recordCall(led, "resume", rres, roleModel(ctx, cfg, "worker"), roleThinking(ctx, cfg, "worker"), { round: n, task: next.id });
+            warn(recordCall(ctx, led, "resume", rres, workerModel, roleThinking(ctx, cfg, "worker"), { round: n, task: next.id, escalated }));
             const resumed = rres.aborted ? undefined : extractJson<WorkerReport>(rres.text, "wf-report");
             if (resumed) {
               report = resumed;
@@ -557,13 +578,13 @@ export default function wf(pi: ExtensionAPI) {
               brief: summarizerBrief(led, cfg, next, wres.transcript || wres.error || "(no output)"),
             prompt: "Summarise the attempt in the attached file. Output only the wf-notes and wf-report blocks.",
               tools: null,
-              model: roleModel(ctx, cfg, "worker"),
+              model: workerModel,
               thinking: "low",
               childExtensions: false,
               signal: abort.signal,
             });
             addCost(sres.cost);
-            recordCall(led, "summarizer", sres, roleModel(ctx, cfg, "worker"), "low", { round: n, task: next.id });
+            warn(recordCall(ctx, led, "summarizer", sres, workerModel, "low", { round: n, task: next.id }));
             const salvaged = extractJson<WorkerReport>(sres.text, "wf-report");
             reportSource = salvaged ? "salvaged" : "lost";
             // The summarizer never sees tool results, so it can't know the task is complete.
@@ -660,6 +681,7 @@ export default function wf(pi: ExtensionAPI) {
             flags: flags.map((f) => `${f.kind}: ${f.detail}`),
             notices,
             taskDone: next.status === "done",
+            ...(escalated ? { escalated: true, model: workerModel } : {}),
           });
           lastPicked = next.id;
           led.saveTasks(tasks);
@@ -673,7 +695,7 @@ export default function wf(pi: ExtensionAPI) {
             "log.md",
             `\n### Round ${st.roundsTotal} (${now()}) — ${next.id} ${next.title}\n` +
               `Manager: ${dec?.rationale ?? "(fallback)"}\n` +
-              `Worker: ${report.status} — ${report.summary}\n` +
+              `Worker${escalated ? ` (escalated to ${workerModel})` : ""}: ${report.status} — ${report.summary}\n` +
               (assumptions.length ? `Assumptions: ${assumptions.join("; ")}\n` : "") +
               (flags.length ? `Harness flags: ${flags.map((f) => `${f.kind}: ${f.detail}`).join("; ")}\n` : "") +
               (notices.length ? `Notices: ${notices.join("; ")}\n` : "") +
@@ -747,6 +769,10 @@ export default function wf(pi: ExtensionAPI) {
           `Verification: ${st.lastVerify?.summary.split("\n")[0] ?? "not run"}`,
           assumptionsThisRun.length ? `\nAssumptions made (review these):\n${assumptionsThisRun.map((a) => `- ${a}`).join("\n")}` : "",
           flagsThisRun.length ? `\n⚑ Harness flags (a flagged round can't complete its task):\n${flagsThisRun.map((f) => `- ${f}`).join("\n")}` : "",
+          escalationsThisRun.length ? `\n↑ Escalated to the stronger model:\n${escalationsThisRun.map((e) => `- ${e}`).join("\n")}` : "",
+          windowWarnings.size
+            ? `\n⚠ Context nearly full (over 80% of the model's window; quality drops and calls may fail):\n${[...windowWarnings].map((w) => `- ${w}`).join("\n")}\nSmaller tasks (\`/${cmd("plan")}\`) or a model with a bigger window help; see \`/${cmd("help")} models\`.`
+            : "",
           st.pause && outcome !== "stalled" ? `\nOpen question: ${st.pause.question}` : "",
           `\nThis run: $${runCost.total.toFixed(3)} · feature total: ${st.roundsTotal} rounds, $${st.costTotal.toFixed(3)}`,
           `\n${whatNow}`,
@@ -771,6 +797,8 @@ export default function wf(pi: ExtensionAPI) {
       const cfg = led.config();
       const loaded = led.tasks();
       const tasks = loaded.ok ? loaded.tasks : [];
+      const badModels = validateModels(ctx, cfg);
+      if (badModels.length) return post(`**Can't review: model setup**\n\n${badModels.map((p) => `- ${p}`).join("\n")}\n\nFix with \`/${cmd("models")}\`.`);
 
       const abort = new AbortController();
       const unsubEsc =
@@ -805,7 +833,8 @@ export default function wf(pi: ExtensionAPI) {
             render();
           },
         });
-        recordCall(led, "reviewer", res, roleModel(ctx, cfg, "reviewer"), roleThinking(ctx, cfg, "reviewer"));
+        const reviewWarn = recordCall(ctx, led, "reviewer", res, roleModel(ctx, cfg, "reviewer"), roleThinking(ctx, cfg, "reviewer"));
+        if (reviewWarn) ctx.ui.notify(`⚠ ${reviewWarn}`, "warning");
         if (res.aborted) return ctx.ui.notify("Review stopped.", "info");
         if (!res.text.trim()) return ctx.ui.notify(`Reviewer produced no output${res.error ? `: ${cap(res.error, 300)}` : ""}`, "error");
 
@@ -867,6 +896,7 @@ export default function wf(pi: ExtensionAPI) {
       const lines = [
         `wf — ${st.feature}`,
         `phase: ${st.phase} · rounds: ${st.roundsTotal} · cost: $${st.costTotal.toFixed(3)} · questions: ${cfg.questions}`,
+        `models: ${ROLES.map((r) => `${r} ${cfg.models[r] ?? "session"}`).join(" · ")}${cfg.escalate ? ` · ↑ ${cfg.escalate.model} after ${cfg.escalate.afterAttempts}` : ""}`,
         `verify: ${resolveVerify(cfg.verify, ctx.cwd) ?? "(none)"} → ${st.lastVerify ? (st.lastVerify.ok === null ? "n/a" : st.lastVerify.ok ? "PASS" : "FAIL") : "not run"}`,
         ...(loaded.ok ? loaded.tasks.map(taskLine) : [`tasks: ${loaded.error}`]),
         ...(st.pause ? [`pending: ${st.pause.question.split("\n")[0]}`] : []),
@@ -902,6 +932,8 @@ export default function wf(pi: ExtensionAPI) {
       const tasks = loaded.tasks;
       const cfg = led.config();
       if (!resolveVerify(cfg.verify, ctx.cwd)) return ctx.ui.notify(`Spec tests need a verify command: set "verify" in ${led.rel("config.json")}.`, "warning");
+      const badModels = validateModels(ctx, cfg);
+      if (badModels.length) return post(`**Can't write tests: model setup**\n\n${badModels.map((p) => `- ${p}`).join("\n")}\n\nFix with \`/${cmd("models")}\`.`);
       const spec: Spec = led.spec()?.status === "written" ? led.spec()! : { status: "written", tasks: {} };
       const isTask = (w?: string) => !!w && tasks.some((t) => t.id.toLowerCase() === w.toLowerCase());
       const byId = (w: string) => tasks.find((t) => t.id.toLowerCase() === w.toLowerCase())!;
@@ -980,7 +1012,8 @@ export default function wf(pi: ExtensionAPI) {
       }
       st.costTotal += res.cost;
       led.saveState(st);
-      recordCall(led, "tester", res, roleModel(ctx, cfg, "tester"), roleThinking(ctx, cfg, "tester"));
+      const testerWarn = recordCall(ctx, led, "tester", res, roleModel(ctx, cfg, "tester"), roleThinking(ctx, cfg, "tester"));
+      if (testerWarn) ctx.ui.notify(`⚠ ${testerWarn}`, "warning");
 
       // The tester may only write parked files: undo anything it wrote in the repo itself.
       const problems: string[] = [];
@@ -1047,6 +1080,133 @@ export default function wf(pi: ExtensionAPI) {
           .filter((l) => l !== "")
           .join("\n"),
       );
+    },
+  });
+
+  /* -------------------------------- models ------------------------------- */
+
+  pi.registerCommand(cmd("models"), {
+    description: "Which model plays which role. /wf:models single · /wf:models mixed <strong> <worker> [after] · /wf:models <role> <model|session>",
+    handler: async (args, ctx) => {
+      const led = new Ledger(ctx.cwd);
+      led.config(); // make sure config.json exists
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(led.read("config.json"));
+      } catch {
+        return ctx.ui.notify(`${led.rel("config.json")} is not valid JSON; fix it first.`, "error");
+      }
+      const models = { ...((raw.models as Record<string, string>) ?? {}) };
+      let escalate = (raw.escalate as { afterAttempts: number; model: string } | null | undefined) ?? null;
+
+      const describe = (spec: string | undefined) => {
+        if (!spec) {
+          const w = contextWindow(ctx, undefined);
+          return `your session model (${sessionModel(ctx) ?? "?"}${w ? ` · ${Math.round(w / 1000)}k context` : ""})`;
+        }
+        const m = findModel(ctx, spec);
+        return m ? modelLabel(m) : `${spec}${(ctx as { modelRegistry?: unknown }).modelRegistry ? " ⚠ unknown to Pi" : ""}`;
+      };
+      const show = (title: string) => {
+        const cfg = led.config();
+        const problems = validateModels(ctx, cfg);
+        post(
+          [
+            `**${title}** (${led.rel("config.json")})`,
+            "",
+            ...ROLES.map((r) => `- ${r}: ${describe(cfg.models[r])}`),
+            `- summarizer: same as the worker`,
+            `- escalation: ${cfg.escalate ? `after ${cfg.escalate.afterAttempts} failed attempts, a task moves to ${describe(cfg.escalate.model)}` : "off"}`,
+            "",
+            "Your main session (scope, plan, chat) uses whatever model you pick in Pi.",
+            ...(problems.length ? ["", ...problems.map((p) => `⚠ ${p}`)] : []),
+            "",
+            `More: \`/${cmd("help")} models\``,
+          ].join("\n"),
+        );
+      };
+      const save = () => {
+        raw.models = models;
+        raw.escalate = escalate;
+        led.write("config.json", `${JSON.stringify(raw, null, 2)}\n`);
+      };
+      const known = (spec: string) => !(ctx as { modelRegistry?: unknown }).modelRegistry || !!findModel(ctx, spec);
+      const setMixed = (strong: string, worker: string, after: number) => {
+        for (const r of ["manager", "reviewer", "tester"]) models[r] = strong;
+        models.worker = worker;
+        escalate = after > 0 ? { afterAttempts: after, model: strong } : null;
+      };
+
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const [first, second, third, fourth] = words;
+      if (!first) {
+        if (!ctx.hasUI) return show("wf models");
+        const SHOW = "Show the current setup";
+        const SINGLE = "single: every role uses your session model";
+        const MIXED = "mixed: a strong model for judgment (tester, manager, reviewer), a cheaper one for the worker";
+        const ONE = "Change one role";
+        const choice = await ctx.ui.select("wf models", [SHOW, SINGLE, MIXED, ONE]);
+        if (!choice || choice === SHOW) return show("wf models");
+        const avail = availableModels(ctx);
+        const labels = avail.map(modelLabel);
+        const pick = async (title: string, withSession = false) => {
+          const opts = [...(withSession ? ["your session model"] : []), ...labels];
+          const c = await ctx.ui.select(title, opts);
+          if (!c) return undefined;
+          return c === "your session model" ? "" : `${avail[labels.indexOf(c)].provider}/${avail[labels.indexOf(c)].id}`;
+        };
+        if (choice === SINGLE) {
+          for (const r of Object.keys(models)) delete models[r];
+          escalate = null;
+        } else if (choice === MIXED) {
+          if (!avail.length) return ctx.ui.notify("Pi reports no available models.", "warning");
+          const strong = await pick("Strong model (tester, manager, reviewer; escalation target)");
+          if (!strong) return;
+          const worker = await pick("Worker model (does most of the calls)");
+          if (!worker) return;
+          const esc = await ctx.ui.confirm("Escalate hard tasks?", `After 2 failed attempts on ${worker}, give the task's next attempts to ${strong}?`);
+          setMixed(strong, worker, esc ? 2 : 0);
+        } else {
+          const role = await ctx.ui.select("Which role?", [...ROLES, "escalation"]);
+          if (!role) return;
+          if (role === "escalation") {
+            const target = await pick("Escalate to which model? (session model = turn escalation off)", true);
+            if (target === undefined) return;
+            escalate = target ? { afterAttempts: escalate?.afterAttempts ?? 2, model: target } : null;
+          } else {
+            const m = await pick(`Model for the ${role}`, true);
+            if (m === undefined) return;
+            if (m) models[role] = m;
+            else delete models[role];
+          }
+        }
+        save();
+        return show("wf models updated");
+      }
+
+      if (first === "single") {
+        for (const r of Object.keys(models)) delete models[r];
+        escalate = null;
+      } else if (first === "mixed") {
+        if (!second || !third) return ctx.ui.notify(`Usage: /${cmd("models")} mixed <strong model> <worker model> [escalate after N attempts, 0 = off]`, "warning");
+        for (const m of [second, third]) if (!known(m)) return ctx.ui.notify(`"${m}" is not a model Pi knows.`, "warning");
+        setMixed(second, third, fourth === undefined ? 2 : Number(fourth) || 0);
+      } else if (first === "escalate" || first === "escalation") {
+        if (!second || second === "off") escalate = null;
+        else {
+          if (!known(second)) return ctx.ui.notify(`"${second}" is not a model Pi knows.`, "warning");
+          escalate = { afterAttempts: Number(third) || escalate?.afterAttempts || 2, model: second };
+        }
+      } else if ((ROLES as string[]).includes(first)) {
+        if (!second) return ctx.ui.notify(`Usage: /${cmd("models")} ${first} <provider/model | session>`, "warning");
+        if (second === "session") delete models[first];
+        else {
+          if (!known(second)) return ctx.ui.notify(`"${second}" is not a model Pi knows.`, "warning");
+          models[first] = second;
+        }
+      } else return ctx.ui.notify(`Unknown: "${first}". Try /${cmd("models")}, single, mixed, escalate, or a role (${ROLES.join(", ")}).`, "warning");
+      save();
+      show("wf models updated");
     },
   });
 

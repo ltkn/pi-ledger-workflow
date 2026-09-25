@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/wf:models`: shows which model plays which role and changes it: `single`, `mixed <strong> <worker> [after]` (strong model on tester, manager and reviewer, cheaper one on the worker), one role, or `escalate <model> [after] | off`; interactive picker from Pi's available models
+- Escalation: a task that has failed `afterAttempts` times on the worker model gets its next attempts on a stronger model (on by default with `mixed`); listed in the build summary and counted in `/wf:stats`
+- Models are validated against Pi's registry (known, with credentials) before every build, review and test run
+- Context-window warnings when a call uses over 80% of its model's window; `/wf:stats` shows each role's peak as a share of its window
 - A worker that ends without its report is resumed in its own session (kept in a temporary folder, always deleted after the round) and asked for the report, read-only, from its full context; the summarizer is now only the fallback. `/wf:stats` counts reports as ok / resumed / salvaged / lost
 - `/wf:stats`: per-feature card with tasks and rounds (per done task, first-try rate), reliability (salvaged/lost reports, missing manager decisions), failing tests, vetoes, flags, undos, questions, review verdicts, spec coverage, and per role: calls, peak and average context, prompt/output tokens, cache share, cost, time and model. `/wf:stats all` compares every feature, grouped by worker model. Data comes from `.pi/wf/events.jsonl`, which the harness now writes
 - Requires Node ≥ 22.19 (Pi's own minimum); dev tooling on TypeScript 7, `@types/node` 26, latest Pi; CI tests Node 22, 24 and 26

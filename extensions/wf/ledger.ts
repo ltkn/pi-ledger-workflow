@@ -90,6 +90,10 @@ export interface CallEvent {
   peakContext: number;
   /** manager only: did it produce a parseable decision */
   decided?: boolean;
+  /** the model's context window, when known, to put peakContext in proportion */
+  window?: number;
+  /** worker only: this attempt ran on the escalation model */
+  escalated?: boolean;
 }
 
 /** One worker round, as the harness saw it. */
@@ -110,6 +114,9 @@ export interface RoundEvent {
   flags: string[];
   notices: string[];
   taskDone: boolean;
+  /** this attempt ran on the escalation model */
+  escalated?: boolean;
+  model?: string;
 }
 
 export type WfEvent =
@@ -171,6 +178,8 @@ export interface Config {
   checkpoints: boolean;
   /** Acceptance tests written from the spec before the build (/wf:tests); only when a verify command exists. */
   specTests: boolean;
+  /** Give a task's next attempts to a stronger model once it has failed `afterAttempts` times (set by /wf:models mixed). */
+  escalate: { afterAttempts: number; model: string } | null;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -186,6 +195,7 @@ export const DEFAULT_CONFIG: Config = {
   workerTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
   checkpoints: true,
   specTests: true,
+  escalate: null,
 };
 
 export function cap(text: string, n: number): string {

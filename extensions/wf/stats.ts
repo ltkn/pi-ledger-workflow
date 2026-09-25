@@ -92,6 +92,8 @@ interface RoleStats {
   cached: number;
   peak: number;
   peakSum: number;
+  /** the fullest any call got, as a share of its model's context window (when known) */
+  peakPct?: number;
   cost: number;
   ms: number;
   model: string;
@@ -103,6 +105,7 @@ export interface Summary {
   perDoneTask: number;
   firstTry: [number, number];
   most?: [string, number];
+  escalations: { rounds: number; finished: number };
   reports: { ok: number; resumed: number; salvaged: number; lost: number };
   managerMissing: [number, number];
   failingRounds: number;
@@ -143,6 +146,7 @@ export function summarize(f: FeatureData): Summary {
         x.output += c.output;
         x.cached += c.cacheRead;
         x.peak = Math.max(x.peak, c.peakContext);
+        if (c.window) x.peakPct = Math.max(x.peakPct ?? 0, Math.round((100 * c.peakContext) / c.window));
         x.peakSum += c.peakContext;
         x.cost += c.cost;
         x.ms += c.ms;
@@ -181,6 +185,7 @@ export function summarize(f: FeatureData): Summary {
     perDoneTask: doneRounds.length ? doneRounds.reduce((a, b) => a + b, 0) / doneRounds.length : 0,
     firstTry: [doneRounds.filter((n) => n === 1).length, doneRounds.length],
     most,
+    escalations: { rounds: rounds.filter((r) => r.escalated).length, finished: rounds.filter((r) => r.escalated && r.taskDone).length },
     reports: {
       ok: rounds.filter((r) => r.report === "ok").length,
       resumed: rounds.filter((r) => r.report === "resumed").length,
@@ -214,7 +219,7 @@ export function renderCard(f: FeatureData): string {
     `wf stats — ${f.feature}${f.phase ? `  (phase: ${f.phase})` : ""}`,
     "",
     `Tasks        ${t.done} done of ${t.total - t.dropped} · ${origin}`,
-    `Rounds       ${s.rounds} worker rounds · ${s.perDoneTask.toFixed(1)} per done task · first try ${s.firstTry[0]}/${s.firstTry[1]} (${pct(...s.firstTry)})${s.most ? ` · most: ${s.most[0]} (${s.most[1]})` : ""}`,
+    `Rounds       ${s.rounds} worker rounds · ${s.perDoneTask.toFixed(1)} per done task · first try ${s.firstTry[0]}/${s.firstTry[1]} (${pct(...s.firstTry)})${s.most ? ` · most: ${s.most[0]} (${s.most[1]})` : ""}${s.escalations.rounds ? ` · escalated ${s.escalations.rounds} (${s.escalations.finished} finished their task)` : ""}`,
     `Reliability  reports ${s.reports.ok} ok, ${s.reports.resumed} resumed, ${s.reports.salvaged} salvaged, ${s.reports.lost} lost · manager decisions missing ${s.managerMissing[0]}/${s.managerMissing[1]}`,
     `Tests        failed after ${s.failingRounds} of ${s.rounds} rounds · finish vetoed ${s.vetoes}× · spec tests: ${s.spec}`,
     `Flags        lost work ${s.flags.lostWork} · tampering ${s.flags.tampering} · spec edits restored ${s.flags.specEdits} · undo ${s.undo.count}${s.undo.count ? ` (${s.undo.rounds} rounds)` : ""}`,
@@ -222,14 +227,14 @@ export function renderCard(f: FeatureData): string {
     `Review       ${s.reviews.length ? s.reviews.join(" → ") : "not run"}`,
     "",
     "Tokens and context (fresh calls only; your main session isn't counted)",
-    `${pad("role", 11)}${lpad("calls", 6)}${lpad("peak ctx", 10)}${lpad("avg peak", 10)}${lpad("prompt", 9)}${lpad("output", 9)}${lpad("cached", 8)}${lpad("cost", 9)}${lpad("time", 9)}  model`,
+    `${pad("role", 11)}${lpad("calls", 6)}${lpad("peak ctx", 13)}${lpad("avg peak", 10)}${lpad("prompt", 9)}${lpad("output", 9)}${lpad("cached", 8)}${lpad("cost", 9)}${lpad("time", 9)}  model`,
   ];
   const row = (name: string, r: RoleStats, model: string) =>
-    `${pad(name, 11)}${lpad(String(r.calls), 6)}${lpad(human(r.peak), 10)}${lpad(name === "total" ? "" : human(Math.round(r.peakSum / r.calls)), 10)}${lpad(human(r.prompt), 9)}${lpad(human(r.output), 9)}${lpad(pct(r.cached, r.prompt), 8)}${lpad(`$${r.cost.toFixed(2)}`, 9)}${lpad(dur(r.ms), 9)}  ${model}`;
+    `${pad(name, 11)}${lpad(String(r.calls), 6)}${lpad(human(r.peak) + (r.peakPct !== undefined ? ` ${r.peakPct}%` : ""), 13)}${lpad(name === "total" ? "" : human(Math.round(r.peakSum / r.calls)), 10)}${lpad(human(r.prompt), 9)}${lpad(human(r.output), 9)}${lpad(pct(r.cached, r.prompt), 8)}${lpad(`$${r.cost.toFixed(2)}`, 9)}${lpad(dur(r.ms), 9)}  ${model}`;
   for (const [name, r] of s.roles) lines.push(row(name, r, r.model));
   if (s.roles.size) lines.push(row("total", s.total, ""));
   else lines.push("(no fresh calls yet)");
-  lines.push("", "peak ctx: the largest prompt one call sent, i.e. how full that model's context got. Compare it with your model's context window.");
+  lines.push("", "peak ctx: the largest prompt one call sent, i.e. how full that model's context got (% of its context window, when Pi knows it).");
   return "```\n" + lines.join("\n") + "\n```";
 }
 
@@ -240,7 +245,7 @@ export function renderAll(features: FeatureData[], skipped: number): string {
   const groups = new Map<string, typeof rows>();
   for (const x of rows) groups.set(workerModel(x), [...(groups.get(workerModel(x)) ?? []), x]);
 
-  const header = `${pad("feature", 28)}${lpad("tasks", 7)}${lpad("rnd/task", 9)}${lpad("1st try", 8)}${lpad("res", 4)}${lpad("salv", 5)}${lpad("flags", 6)}  ${pad("review", 16)}${lpad("peak w", 8)}${lpad("tokens", 8)}${lpad("cost", 8)}${lpad("time", 9)}`;
+  const header = `${pad("feature", 28)}${lpad("tasks", 7)}${lpad("rnd/task", 9)}${lpad("1st try", 8)}${lpad("res", 4)}${lpad("salv", 5)}${lpad("flags", 6)}  ${pad("review", 16)}${lpad("peak w", 11)}${lpad("tokens", 8)}${lpad("cost", 8)}${lpad("time", 9)}`;
   const lines = [header];
   for (const [model, xs] of groups) {
     const mgr = mostCommon(xs.map((x) => x.s.roles.get("manager")?.model));
@@ -248,14 +253,14 @@ export function renderAll(features: FeatureData[], skipped: number): string {
     for (const { f, s } of xs) {
       const flags = s.flags.lostWork + s.flags.tampering;
       lines.push(
-        `${pad(f.feature, 28)}${lpad(`${s.tasks.done}/${s.tasks.total - s.tasks.dropped}`, 7)}${lpad(s.perDoneTask.toFixed(1), 9)}${lpad(pct(...s.firstTry), 8)}${lpad(String(s.reports.resumed), 4)}${lpad(String(s.reports.salvaged + s.reports.lost), 5)}${lpad(String(flags), 6)}  ${pad(s.reviews.at(-1)?.replace("changes_needed", "changes").replace(/ \((\d+) R-tasks\)/, " +$1R") ?? "–", 16)}${lpad(human(s.roles.get("worker")?.peak ?? 0), 8)}${lpad(human(s.total.prompt + s.total.output), 8)}${lpad(`$${s.total.cost.toFixed(2)}`, 8)}${lpad(dur(s.total.ms), 9)}`,
+        `${pad(f.feature, 28)}${lpad(`${s.tasks.done}/${s.tasks.total - s.tasks.dropped}`, 7)}${lpad(s.perDoneTask.toFixed(1), 9)}${lpad(pct(...s.firstTry), 8)}${lpad(String(s.reports.resumed), 4)}${lpad(String(s.reports.salvaged + s.reports.lost), 5)}${lpad(String(flags), 6)}  ${pad(s.reviews.at(-1)?.replace("changes_needed", "changes").replace(/ \((\d+) R-tasks\)/, " +$1R") ?? "–", 16)}${lpad(human(s.roles.get("worker")?.peak ?? 0) + (s.roles.get("worker")?.peakPct !== undefined ? ` ${s.roles.get("worker")!.peakPct}%` : ""), 11)}${lpad(human(s.total.prompt + s.total.output), 8)}${lpad(`$${s.total.cost.toFixed(2)}`, 8)}${lpad(dur(s.total.ms), 9)}`,
       );
     }
     if (xs.length > 1) {
       const avg = (g: (x: (typeof xs)[number]) => number) => xs.reduce((a, x) => a + g(x), 0) / xs.length;
       const first = xs.reduce((a, x) => [a[0] + x.s.firstTry[0], a[1] + x.s.firstTry[1]], [0, 0]);
       lines.push(
-        `${pad("  average", 28)}${lpad("", 7)}${lpad(avg((x) => x.s.perDoneTask).toFixed(1), 9)}${lpad(pct(first[0], first[1]), 8)}${lpad(avg((x) => x.s.reports.resumed).toFixed(1), 4)}${lpad(avg((x) => x.s.reports.salvaged + x.s.reports.lost).toFixed(1), 5)}${lpad(avg((x) => x.s.flags.lostWork + x.s.flags.tampering).toFixed(1), 6)}  ${pad("", 16)}${lpad(human(Math.round(avg((x) => x.s.roles.get("worker")?.peak ?? 0))), 8)}${lpad(human(Math.round(avg((x) => x.s.total.prompt + x.s.total.output))), 8)}${lpad(`$${avg((x) => x.s.total.cost).toFixed(2)}`, 8)}${lpad(dur(avg((x) => x.s.total.ms)), 9)}`,
+        `${pad("  average", 28)}${lpad("", 7)}${lpad(avg((x) => x.s.perDoneTask).toFixed(1), 9)}${lpad(pct(first[0], first[1]), 8)}${lpad(avg((x) => x.s.reports.resumed).toFixed(1), 4)}${lpad(avg((x) => x.s.reports.salvaged + x.s.reports.lost).toFixed(1), 5)}${lpad(avg((x) => x.s.flags.lostWork + x.s.flags.tampering).toFixed(1), 6)}  ${pad("", 16)}${lpad(human(Math.round(avg((x) => x.s.roles.get("worker")?.peak ?? 0))), 11)}${lpad(human(Math.round(avg((x) => x.s.total.prompt + x.s.total.output))), 8)}${lpad(`$${avg((x) => x.s.total.cost).toFixed(2)}`, 8)}${lpad(dur(avg((x) => x.s.total.ms)), 9)}`,
       );
     }
   }

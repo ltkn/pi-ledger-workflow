@@ -356,6 +356,51 @@ a question. Pair it with a larger `maxRounds` for long runs.
   end up in the review diff.
 <!-- /wf -->
 
+<!-- wf:topic models -->
+## Choosing models
+
+Every wf role is a separate call, so each can use a different model. The idea:
+spend on judgment, save on volume.
+
+| Role | What it decides | Strong model? |
+|---|---|---|
+| your main session | scope and plan: what gets built | yes, pick it in Pi as usual |
+| tester | the spec tests, i.e. what "done" means | yes: its tests are the gate for everything after |
+| reviewer | whether the result is right | yes: the last check before you |
+| manager | what to do next, when to change approach | helps; its calls are short |
+| worker | writes the code | this is where the volume is: a cheaper or local model |
+| summarizer | rare fallback | follows the worker |
+
+**`/wf:models`** shows the current setup and changes it:
+
+- **single**: every role uses your session model (the default).
+- **mixed**: you pick a strong model (tester, manager, reviewer) and a worker
+  model. `/wf:models mixed anthropic/claude-sonnet-5 llama/qwen3.8-27b` does it
+  in one line.
+- One role: `/wf:models worker llama/qwen3.8-27b`, or `session` to reset it.
+
+**Escalation.** With mixed, a task that has failed twice on the worker model
+gets its next attempts on the strong model: the cheap model does the bulk, the
+hard tasks get help. `/wf:models escalate <model> [after N]` sets it,
+`/wf:models escalate off` turns it off. The build summary lists every
+escalation, and `/wf:stats` shows how many escalated attempts finished their
+task.
+
+**Context windows.** wf knows each model's context window from Pi. When a call
+uses more than 80% of it, the build warns you: quality drops before the hard
+limit. Smaller tasks (`/wf:plan`), a model with a bigger window, or (for local
+models) a bigger `-c` on the server help. `/wf:stats` shows each role's peak as
+a share of its window.
+
+Before every build, review and test run, wf checks that each configured model
+exists in Pi and has credentials, so a typo stops you once instead of failing
+every round. Thinking levels per role are set in `.pi/wf/config.json`
+(`"thinking": {"worker": "medium"}`).
+
+Which setup is best for *your* code is an empirical question: build a few
+features each way and compare them with `/wf:stats all`.
+<!-- /wf -->
+
 <!-- wf:topic stats -->
 ## Is it working? `/wf:stats`
 
