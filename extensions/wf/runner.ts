@@ -144,18 +144,38 @@ export async function runFresh(o: RunOptions): Promise<RunResult> {
   return res;
 }
 
+/** Escape raw newlines/tabs inside JSON strings: a common slip of smaller models that JSON.parse rejects. */
+function escapeControlInStrings(s: string): string {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (const ch of s) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      else if (ch === "\n" || ch === "\r" || ch === "\t") {
+        out += ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : "\\t";
+        continue;
+      }
+    } else if (ch === '"') inStr = true;
+    out += ch;
+  }
+  return out;
+}
+
 /** Extract the last ```<tag> fenced JSON block (falls back to the last ```json block). */
 export function extractJson<T>(text: string, tag: string): T | undefined {
+  const noTrailingCommas = (s: string) => s.replace(/,\s*([}\]])/g, "$1");
   const tryParse = (s: string): T | undefined => {
-    try {
-      return JSON.parse(s) as T;
-    } catch {
+    for (const candidate of [s, noTrailingCommas(s), noTrailingCommas(escapeControlInStrings(s))]) {
       try {
-        return JSON.parse(s.replace(/,\s*([}\]])/g, "$1")) as T; // tolerate trailing commas
+        return JSON.parse(candidate) as T;
       } catch {
-        return undefined;
+        /* try the next repair */
       }
     }
+    return undefined;
   };
   for (const re of [new RegExp("```" + tag + "\\s*([\\s\\S]*?)```", "g"), /```json\s*([\s\S]*?)```/g]) {
     const all = [...text.matchAll(re)];
@@ -165,6 +185,13 @@ export function extractJson<T>(text: string, tag: string): T | undefined {
     }
   }
   return undefined;
+}
+
+/** Content of the last ```<tag> fenced block (free text, e.g. wf-notes), or undefined. */
+export function extractBlock(text: string, tag: string): string | undefined {
+  const all = [...text.matchAll(new RegExp("```" + tag + "[^\\S\\n]*\\n([\\s\\S]*?)```", "g"))];
+  const last = all.at(-1)?.[1].trim();
+  return last || undefined;
 }
 
 /** Text before the fenced block, for showing prose to the human. */

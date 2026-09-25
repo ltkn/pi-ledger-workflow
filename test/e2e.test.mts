@@ -89,7 +89,12 @@ test("happy path: question pause, answer, summarizer, completion, review follow-
   await t.run("build", "yes"); // answer via args → recorded, loop completes
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
   assert.match(t.read("decisions.md"), /Use soft delete\?\n\s+A: yes/);
-  assert.match(t.read("log.md"), /partial — salvaged/); // cut-off summarizer used
+  assert.match(t.read("log.md"), /partial — salvaged/); // cut-off summarizer used; its "done" downgraded
+  assert.match(t.read("log.md"), /did T1\nsecond line/); // raw newline inside a JSON string repaired
+  const built = JSON.parse(t.read("tasks.json")).tasks;
+  assert.deepEqual(built.map((x: any) => x.id), ["T1", "T2", "T3"]); // delta merge keeps order
+  assert.equal(built[2].title, "tests"); // untouched fields kept
+  assert.equal(built[2].detail, "patched by manager");
   assert.match(t.read("assumptions.md"), /T1: used UTC/);
   assert.equal(t.read("notes.md").trim(), "notes after T3"); // rewritten, not appended
 

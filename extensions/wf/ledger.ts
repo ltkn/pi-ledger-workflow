@@ -35,6 +35,7 @@ export interface VerifyResult {
 export interface WorkerReport {
   status: "done" | "partial" | "blocked" | "needs_input";
   summary: string;
+  /** legacy: notes now arrive in a separate wf-notes block */
   notes?: string;
   assumptions?: string[];
   question?: string;
@@ -55,7 +56,8 @@ export interface State {
   costTotal: number;
   pause?: Pause;
   lastVerify?: VerifyResult;
-  lastReport?: WorkerReport & { task: string };
+  /** changed: whether that round changed files on disk */
+  lastReport?: WorkerReport & { task: string; changed?: boolean };
   updatedAt: string;
 }
 

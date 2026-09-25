@@ -20,7 +20,9 @@ if (sys.includes("MANAGER")) {
     const next = tasks.find((t) => t.status !== "done" && t.status !== "dropped");
     const answered = fs.readFileSync(".pi/wf/decisions.md", "utf8").includes("A: yes");
     const q = brief.includes("ASK_MANAGER") && !answered ? "Use soft delete?" : null;
-    say("ok\n```wf-manage\n" + JSON.stringify({ tasks, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
+    // Delta: only the changed task is sent; the harness must keep order and untouched fields.
+    const delta = [{ id: "T3", detail: "patched by manager" }];
+    say("ok\n```wf-manage\n" + JSON.stringify({ tasks: delta, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
   }
 } else if (sys.includes("WORKER")) {
   if (scenario === "stuck") {
@@ -37,11 +39,14 @@ if (sys.includes("MANAGER")) {
       fs.writeFileSync("T2.fixed", "1");
       say("I ran out of room before writing a report"); // triggers the cut-off summarizer
     } else {
-      say("done\n```wf-report\n" + JSON.stringify({ status: "done", summary: `did ${id}`, notes: `notes after ${id}`, assumptions: id === "T1" ? ["used UTC"] : [] }) + "\n```");
+      // T1's summary carries a raw newline inside the JSON string (a small-model slip the parser repairs).
+      const report = JSON.stringify({ status: "done", summary: id === "T1" ? "did T1 NEWLINE second line" : `did ${id}`, assumptions: id === "T1" ? ["used UTC"] : [] });
+      say(`done\n\`\`\`wf-notes\nnotes after ${id}\n\`\`\`\n\`\`\`wf-report\n${report.replace(" NEWLINE ", "\n")}\n\`\`\``);
     }
   }
 } else if (sys.includes("summarise")) {
-  say('```wf-report\n{"status":"partial","summary":"salvaged","notes":"salvaged notes",}\n```'); // trailing comma on purpose
+  // Claims "done" (the harness must downgrade it) and has a trailing comma on purpose.
+  say('```wf-notes\nsalvaged notes\n```\n```wf-report\n{"status":"done","summary":"salvaged",}\n```');
 } else if (sys.includes("REVIEWER")) {
   say('Verdict: changes needed\n- missing X\n```wf-review\n{"verdict":"changes_needed","followups":[{"title":"Handle X"}]}\n```');
 }

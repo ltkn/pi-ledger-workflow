@@ -45,7 +45,7 @@ import {
   workerSystem,
 } from "./prompts.ts";
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
-import { extractJson, runFresh, stripFence } from "./runner.ts";
+import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
 const cmd = (verb: string) => `${PREFIX}:${verb}`;
@@ -269,17 +269,15 @@ export default function wf(pi: ExtensionAPI) {
         return st.lastVerify?.ok !== false;
       };
 
+      /** The manager sends only changed or new tasks: patch those in place, append new ones, keep the rest as is. */
       const mergeTasks = (proposed: Partial<Task>[] | undefined) => {
         if (!Array.isArray(proposed) || !proposed.length) return;
-        const byId = new Map(tasks.map((t) => [t.id, t]));
-        const merged: Task[] = [];
-        for (const p of proposed) {
-          if (!p?.id) continue;
-          const old = byId.get(p.id);
+        const patches = new Map(proposed.filter((p) => p?.id).map((p) => [String(p.id), p]));
+        const apply = (old: Task | undefined, p: Partial<Task>): Task => {
           const status = (["todo", "doing", "done", "dropped"].includes(p.status as string) ? p.status : old?.status ?? "todo") as Task["status"];
-          merged.push({
-            id: p.id,
-            title: p.title ?? old?.title ?? p.id,
+          return {
+            id: String(p.id),
+            title: p.title ?? old?.title ?? String(p.id),
             detail: p.detail ?? old?.detail,
             acceptance: p.acceptance ?? old?.acceptance,
             // The manager may only mark done a task a worker actually attempted, and never while
@@ -290,10 +288,13 @@ export default function wf(pi: ExtensionAPI) {
                 : status,
             attempts: old?.attempts ?? 0,
             source: old?.source ?? "manager",
-          });
-          byId.delete(p.id);
-        }
-        for (const leftover of byId.values()) merged.push(leftover); // manager may not silently delete tasks
+          };
+        };
+        const merged = tasks.map((t) => {
+          const p = patches.get(t.id);
+          return p ? apply(t, p) : t;
+        });
+        for (const [id, p] of patches) if (!tasks.some((t) => t.id === id)) merged.push(apply(undefined, p));
         tasks = merged;
       };
 
@@ -416,6 +417,7 @@ export default function wf(pi: ExtensionAPI) {
           }
 
           let report = extractJson<WorkerReport>(wres.text, "wf-report");
+          let notes = extractBlock(wres.text, "wf-notes") ?? report?.notes;
           if (!report) {
             // Cut-off summarizer: salvage the attempt so its ideas reach the manager.
             render(round, `summarising ${next.id}`);
@@ -431,12 +433,17 @@ export default function wf(pi: ExtensionAPI) {
               signal: abort.signal,
             });
             addCost(sres.cost);
-            report = extractJson<WorkerReport>(sres.text, "wf-report") ?? {
-              status: "partial",
-              summary: `Worker ended without a report (${wres.stopReason ?? "unknown"}${wres.error ? `: ${cap(wres.error, 200)}` : ""}).`,
-            };
+            const salvaged = extractJson<WorkerReport>(sres.text, "wf-report");
+            // The summarizer never sees tool results, so it can't know the task is complete.
+            report = salvaged
+              ? { ...salvaged, status: "partial" }
+              : {
+                  status: "partial",
+                  summary: `Worker ended without a report (${wres.stopReason ?? "unknown"}${wres.error ? `: ${cap(wres.error, 200)}` : ""}).`,
+                };
+            notes = extractBlock(sres.text, "wf-notes") ?? salvaged?.notes ?? notes;
           }
-          if (report.notes?.trim()) led.write("notes.md", cap(report.notes.trim(), cfg.caps.notes) + "\n");
+          if (notes?.trim()) led.write("notes.md", cap(notes.trim(), cfg.caps.notes) + "\n");
 
           const fpAfter = fingerprint(ctx.cwd);
           lastRoundChanged = fpAfter === undefined || fpAfter !== fpBefore;
@@ -456,7 +463,7 @@ export default function wf(pi: ExtensionAPI) {
           }
 
           if (report.status === "done" && st.lastVerify?.ok !== false) next.status = "done";
-          st.lastReport = { ...report, task: next.id };
+          st.lastReport = { ...report, task: next.id, changed: lastRoundChanged };
           lastPicked = next.id;
           led.saveTasks(tasks);
 
