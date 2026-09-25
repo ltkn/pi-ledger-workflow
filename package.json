@@ -4,12 +4,30 @@
   "description": "Scope → plan → build → review for the Pi coding agent: fresh-context manager/worker loop coordinated through an on-disk ledger, verified by your test suite. Adapted from GVS5H (arXiv:2608.26480).",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "pi-extension", "coding-agent", "orchestration", "multi-agent", "ledger"],
-  "repository": { "type": "git", "url": "git+https://github.com/ltkn/pi-ledger-workflow.git" },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "coding-agent",
+    "orchestration",
+    "multi-agent",
+    "ledger"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ltkn/pi-ledger-workflow.git"
+  },
   "homepage": "https://github.com/ltkn/pi-ledger-workflow#readme",
-  "files": ["extensions", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "pi": {
-    "extensions": ["./extensions/wf/index.ts"]
+    "extensions": [
+      "./extensions/wf/index.ts"
+    ]
   },
   "scripts": {
     "typecheck": "tsc -p .",
@@ -21,9 +39,11 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

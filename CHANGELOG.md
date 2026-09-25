@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Requires Node ≥ 22.19 (Pi's own minimum); dev tooling on TypeScript 7, `@types/node` 26, latest Pi; CI tests Node 22, 24 and 26
 - Spec tests: `/wf:tests` runs a fresh tester that writes acceptance tests from the spec before the build, parked in `.pi/wf/spec/` so they can't break compilation; you review them along with the gaps it had to guess. A task's tests are copied into the repo when it starts and restored before every test run, so implementers can't change them. `/wf:tests T3 <change>` rewrites one task's tests; changed tasks go stale and are rewritten on the next `/wf:tests`
 - Skipping is explicit: `/wf:tests skip [T2] <why>`, or "build without" when `/wf:build` asks; the reviewer is told. On by default when a verify command exists (`"specTests": false` turns it off); `models.tester` / `thinking.tester` pick the tester's model
 - Checkpoints: shadow snapshots of the working tree before and after every build round, in git's object store (`refs/wf/checkpoints`); your branch, commits and staging area are never touched. Disable with `"checkpoints": false`
