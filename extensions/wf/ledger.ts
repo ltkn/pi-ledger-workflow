@@ -1,0 +1,255 @@
+/**
+ * Ledger: the shared, on-disk workspace that fresh contexts coordinate through.
+ * The harness owns every write to .pi/wf/ so caps and formats are enforced
+ * (paper §2: plan/notes are capped when written so neither grows without bound).
+ */
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+export const PREFIX = "wf";
+export const LEDGER_DIR = path.join(".pi", "wf");
+const LEDGER_PATHSPEC = ":(exclude).pi/wf";
+
+export type TaskStatus = "todo" | "doing" | "done" | "dropped";
+
+export interface Task {
+  id: string;
+  title: string;
+  detail?: string;
+  acceptance?: string;
+  status: TaskStatus;
+  attempts?: number;
+  source?: "plan" | "manager" | "verify" | "review";
+}
+
+export interface VerifyResult {
+  ok: boolean | null; // null = no verify command configured
+  command: string | null;
+  summary: string;
+  fingerprint?: string;
+  at: string;
+}
+
+export interface WorkerReport {
+  status: "done" | "partial" | "blocked" | "needs_input";
+  summary: string;
+  notes?: string;
+  assumptions?: string[];
+  question?: string;
+  proposed?: string[];
+}
+
+export interface Pause {
+  question: string;
+  from: "worker" | "manager" | "harness";
+  task?: string;
+}
+
+export interface State {
+  phase: "scoped" | "planned" | "building" | "paused" | "built" | "reviewed";
+  feature: string;
+  baseCommit?: string;
+  roundsTotal: number;
+  costTotal: number;
+  pause?: Pause;
+  lastVerify?: VerifyResult;
+  lastReport?: WorkerReport & { task: string };
+  updatedAt: string;
+}
+
+export interface Config {
+  /** Automatic manager→worker cycles per /wf:build invocation (paper: MAX_ITERS=10). */
+  maxRounds: number;
+  /** Rounds a single task may consume before the harness asks you. */
+  maxTaskAttempts: number;
+  /** "auto" detects mvn/gradle/npm/…; null disables; any string is run in a shell. */
+  verify: string | null;
+  verifyTimeoutSec: number;
+  /** "ask": workers/manager may pause for a decision. "assume": never pause, record assumptions. */
+  questions: "ask" | "assume";
+  caps: { plan: number; notes: number; context: number; verifyOutput: number };
+  /** provider/model per role; unset = the model of your current Pi session. */
+  models: { manager?: string; worker?: string; reviewer?: string };
+  /** thinking level per role; unset = your current session's level. */
+  thinking: { manager?: string; worker?: string; reviewer?: string };
+  /** Load your other Pi extensions inside fresh workers (wf itself is never needed there). */
+  childExtensions: boolean;
+  workerTools: string[];
+}
+
+export const DEFAULT_CONFIG: Config = {
+  maxRounds: 10,
+  maxTaskAttempts: 4,
+  verify: "auto",
+  verifyTimeoutSec: 900,
+  questions: "ask",
+  caps: { plan: 4000, notes: 8000, context: 6000, verifyOutput: 4000 },
+  models: {},
+  thinking: {},
+  childExtensions: false,
+  workerTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+};
+
+export function cap(text: string, n: number): string {
+  if (!text || text.length <= n) return text ?? "";
+  return `${text.slice(0, n)}\n…[truncated ${text.length - n} chars]`;
+}
+
+export function now(): string {
+  return new Date().toISOString().replace("T", " ").slice(0, 19);
+}
+
+export class Ledger {
+  readonly root: string;
+  constructor(readonly cwd: string) {
+    this.root = path.join(cwd, LEDGER_DIR);
+  }
+
+  p(name: string): string {
+    return path.join(this.root, name);
+  }
+  rel(name: string): string {
+    return path.join(LEDGER_DIR, name);
+  }
+  exists(name: string): boolean {
+    return fs.existsSync(this.p(name));
+  }
+  read(name: string, limit?: number): string {
+    try {
+      const t = fs.readFileSync(this.p(name), "utf8");
+      return limit ? cap(t, limit) : t;
+    } catch {
+      return "";
+    }
+  }
+  write(name: string, content: string): void {
+    fs.mkdirSync(this.root, { recursive: true });
+    fs.writeFileSync(this.p(name), content, "utf8");
+  }
+  append(name: string, content: string): void {
+    fs.mkdirSync(this.root, { recursive: true });
+    fs.appendFileSync(this.p(name), content, "utf8");
+  }
+
+  config(): Config {
+    if (!this.exists("config.json")) this.write("config.json", `${JSON.stringify(DEFAULT_CONFIG, null, 2)}\n`);
+    try {
+      const raw = JSON.parse(this.read("config.json"));
+      return {
+        ...DEFAULT_CONFIG,
+        ...raw,
+        caps: { ...DEFAULT_CONFIG.caps, ...(raw.caps ?? {}) },
+        models: { ...(raw.models ?? {}) },
+        thinking: { ...(raw.thinking ?? {}) },
+      };
+    } catch {
+      return { ...DEFAULT_CONFIG };
+    }
+  }
+
+  state(): State | undefined {
+    try {
+      return JSON.parse(this.read("state.json")) as State;
+    } catch {
+      return undefined;
+    }
+  }
+  saveState(s: State): void {
+    s.updatedAt = now();
+    this.write("state.json", `${JSON.stringify(s, null, 2)}\n`);
+  }
+
+  tasks(): { ok: true; tasks: Task[] } | { ok: false; error: string } {
+    if (!this.exists("tasks.json")) return { ok: false, error: "tasks.json does not exist" };
+    try {
+      const raw = JSON.parse(this.read("tasks.json"));
+      const list = Array.isArray(raw) ? raw : raw.tasks;
+      if (!Array.isArray(list) || list.length === 0) return { ok: false, error: "tasks.json has no tasks" };
+      const tasks: Task[] = list.map((t: any, i: number) => ({
+        id: String(t.id ?? `T${i + 1}`),
+        title: String(t.title ?? t.name ?? `Task ${i + 1}`),
+        detail: t.detail ?? t.description,
+        acceptance: t.acceptance,
+        status: (["todo", "doing", "done", "dropped"].includes(t.status) ? t.status : "todo") as TaskStatus,
+        attempts: Number(t.attempts ?? 0),
+        source: t.source ?? "plan",
+      }));
+      return { ok: true, tasks };
+    } catch (e) {
+      return { ok: false, error: `tasks.json is not valid JSON (${(e as Error).message})` };
+    }
+  }
+  saveTasks(tasks: Task[]): void {
+    this.write("tasks.json", `${JSON.stringify({ tasks }, null, 2)}\n`);
+  }
+
+  recordDecision(text: string): void {
+    if (!this.exists("decisions.md")) this.write("decisions.md", "# Decisions (binding for every worker)\n\n");
+    this.append("decisions.md", `- [${now()}] ${text.replace(/\n/g, "\n  ")}\n`);
+  }
+
+  /** Move the current feature's ledger aside so a new /wf:scope starts clean. */
+  archive(): string | undefined {
+    if (!fs.existsSync(this.root)) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const dest = path.join(this.root, "archive", stamp);
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(this.root)) {
+      if (f === "archive" || f === "config.json") continue;
+      fs.renameSync(path.join(this.root, f), path.join(dest, f));
+    }
+    return dest;
+  }
+}
+
+/* ------------------------------ git helpers ------------------------------ */
+
+function git(cwd: string, args: string[]): string | undefined {
+  try {
+    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+  } catch {
+    return undefined;
+  }
+}
+
+export function isGitRepo(cwd: string): boolean {
+  return git(cwd, ["rev-parse", "--is-inside-work-tree"])?.trim() === "true";
+}
+
+export function gitHead(cwd: string): string | undefined {
+  return git(cwd, ["rev-parse", "HEAD"])?.trim() || undefined;
+}
+
+/** Hash of the working tree (tracked diff + untracked files), ledger excluded. Detects "did this round change anything". */
+export function fingerprint(cwd: string): string | undefined {
+  if (!isGitRepo(cwd)) return undefined;
+  const h = createHash("sha1");
+  h.update(git(cwd, ["diff", "HEAD", "--", ".", LEDGER_PATHSPEC]) ?? "");
+  const untracked = (git(cwd, ["ls-files", "--others", "--exclude-standard", "--", ".", LEDGER_PATHSPEC]) ?? "")
+    .split("\n")
+    .filter(Boolean);
+  for (const f of untracked) {
+    h.update(f);
+    try {
+      const st = fs.statSync(path.join(cwd, f));
+      h.update(st.size > 1_000_000 ? `${st.size}:${st.mtimeMs}` : fs.readFileSync(path.join(cwd, f)));
+    } catch {
+      /* ignore */
+    }
+  }
+  return h.digest("hex");
+}
+
+/** Files changed since the feature's base commit (tracked + untracked), ledger excluded. */
+export function changedSinceBase(cwd: string, base?: string): string[] | undefined {
+  if (!isGitRepo(cwd)) return undefined;
+  const tracked = git(cwd, ["diff", "--name-only", base ?? "HEAD", "--", ".", LEDGER_PATHSPEC]) ?? "";
+  const untracked = git(cwd, ["ls-files", "--others", "--exclude-standard", "--", ".", LEDGER_PATHSPEC]) ?? "";
+  return [...new Set(`${tracked}\n${untracked}`.split("\n").filter(Boolean))];
+}
+
+export function diffStat(cwd: string, base?: string): string {
+  return git(cwd, ["diff", "--stat", base ?? "HEAD", "--", ".", LEDGER_PATHSPEC])?.trim() ?? "";
+}

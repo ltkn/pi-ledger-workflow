@@ -1,0 +1,29 @@
+{
+  "name": "pi-ledger-workflow",
+  "version": "0.1.0",
+  "description": "Scope → plan → build → review for the Pi coding agent: fresh-context manager/worker loop coordinated through an on-disk ledger, verified by your test suite. Adapted from GVS5H (arXiv:2608.26480).",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "pi", "pi-extension", "coding-agent", "orchestration", "multi-agent", "ledger"],
+  "repository": { "type": "git", "url": "git+https://github.com/YOUR_GITHUB_USER/pi-ledger-workflow.git" },
+  "homepage": "https://github.com/YOUR_GITHUB_USER/pi-ledger-workflow#readme",
+  "files": ["extensions", "README.md", "LICENSE", "CHANGELOG.md"],
+  "pi": {
+    "extensions": ["./extensions/wf/index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "tsx --test test/e2e.test.mts",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": { "node": ">=20" }
+}
