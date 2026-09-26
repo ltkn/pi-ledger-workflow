@@ -55,9 +55,10 @@ export interface TaskProgress {
   attempts: number;
 }
 
+/** "checking" only appears in progress files from before the gap check was removed. */
 export type Phase = "written" | "checking" | "building" | "paused" | "built" | "reviewed";
 
-/** What the agent reported through pb_task_done / pb_spec_gaps in the current run. */
+/** What the agent reported through pb_task_done in the current run. */
 export interface Report {
   task: string;
   status: "done" | "blocked" | "question";
@@ -75,7 +76,8 @@ export interface Progress {
   /** task being worked on; "final" = the full check after the last task */
   current?: string;
   report?: Report;
-  gaps?: string[];
+  /** choices the builder made where the spec was ambiguous or didn't match the code */
+  assumptions?: string[];
   pause?: string;
   lastVerify?: VerifyResult;
   updatedAt: string;

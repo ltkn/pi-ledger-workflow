@@ -68,7 +68,10 @@ Rules:
 - Tasks in dependency order; each leaves the project compiling and the tests passing. As many as the feature needs; prefer small ones.
 - The approach: ${QUALITY_BAR} Nothing is planned as a stopgap; what must wait goes under "Out of scope".
 - Name: short kebab-case (e.g. "order-cancellation").${existing.length ? ` Existing specs: ${existing.join(", ")}. Reusing a name rewrites that spec.` : ""}
+- State each fact once. When the same thing appears in two forms (an example and the rule behind it, a mockup and a layout spec), the two will drift apart: keep one as the reference and say so.
 - Sections required: ${REQUIRED_SECTIONS.map((s) => `"## ${s}"`).join(", ")}. The tool rejects a spec that doesn't parse; fix it and call again.
+
+Before calling pb_write_spec, check the spec against itself and against the code you read: examples versus rules, acceptance criteria versus tasks, "unchanged" versus "extended" (e.g. a test that must stay unedited while a type it uses changes), every path, name and signature it relies on. Resolve each problem you find with the best solution (what a senior engineer would choose for correctness and maintainability, even when it is more work) and write the resolution into the spec. Tell me what you resolved, briefly; ask me only about choices that are mine to make (behaviour, API, data).
 
 Then tell me where each spec is, and anything still open. End your reply with this block, verbatim:
 
@@ -78,14 +81,16 @@ ${tip("spec.next")}`;
 /* ================================== build ================================== */
 
 const BUILD_RULES = `Rules for this build:
+- The planning is done: the design, the decisions and the tasks in the spec are settled. Implement them as written; don't re-plan or reconsider them. If something really can't be built as written, finish the task with status "question" (or "blocked") and say why, instead of redesigning it.
 - The spec is the source of truth. Decisions in it are binding; when I decide something new in this session, record it with pb_record_decision.
+- When the spec is ambiguous, contradicts itself, or doesn't match the code, don't stop to ask: choose the best solution, the one a senior engineer would pick for correctness and maintainability, even when it is more work. Stay consistent with the acceptance criteria and the code as it is; explicit rules outrank examples. Record the choice with pb_record_decision (assumption: true) and continue. Stop with status "question" only when the choice changes behaviour, an API or data in a way that is costly to undo.
 - ${QUALITY_BAR} Write what a senior engineer would approve in review. Never make something pass by ${QUICK_FIXES}: fix the root cause. If the proper fix needs something outside the task, finish with status "blocked" and say why.
 - Follow the codebase's conventions. If one is outdated or insecure, stay consistent within the task and say so in your summary; don't rewrite beyond the task. Don't add dependencies or change versions unless the spec says so.
 - Keep each change scoped to its task: no unrelated refactors, renames or reformatting. Leave no debug output, commented-out code or stray TODOs.
 - ${COMMENT_RULES}
 - Never delete, skip, disable or weaken a test to make a check pass. If a test is wrong, finish with status "blocked" and say why.
 - Never run git commands that discard or move changes (checkout or restore of files, reset, stash, clean), and don't commit: the working tree holds this build's uncommitted work.
-- Don't edit anything under ${P}/: the harness owns it.`;
+- Don't read or edit anything under .pi/ other than your spec: the harness owns it, and other files there (old plans, other tools' notes) are not part of this build.`;
 
 function testsRule(spec: ParsedSpec): string {
   if (!spec.newTests) return `- New tests: NO for this feature (${spec.newTestsReason}). Don't add or extend tests; the existing ones must keep passing.`;
@@ -98,7 +103,7 @@ function gateLine(spec: ParsedSpec, testCmd: string | null, buildCmd: string | n
   return `The harness runs no checks for this feature (${spec.gateReason}): your own verification is all there is.`;
 }
 
-/** The first message of the build session: the spec, the rules, and the gap check before any code. */
+/** The first message of the build session: the rules and the spec; the first task follows it. */
 export function buildSeed(name: string, markdown: string, spec: ParsedSpec, testCmd: string | null, buildCmd: string | null): string {
   return `[pb:build ${name}] You are building this feature in a fresh session, from the spec below and nothing else.
 
@@ -108,7 +113,7 @@ ${testsRule(spec)}
 
 The harness hands you the tasks one at a time. Finish each with the pb_task_done tool; it is how the harness knows you are done.
 
-FIRST, before writing any code: read the spec, then read the code it points to. Look for gaps, contradictions, or places where the spec doesn't match the code as it is now. Then call pb_spec_gaps with what you found (an empty list if nothing). Don't start on T1 yet.
+Your first task follows the spec.
 
 --- spec: ${P}/specs/${name}/spec.md ---
 
@@ -135,13 +140,14 @@ Fix the root cause (not the symptom), then call pb_task_done again with task "${
 
 export const REVIEWER_SYSTEM = `You are an independent REVIEWER in a fresh context. You did not take part in planning or building, and you are deliberately not shown the build conversation: judge the actual code against the spec.
 
-Do not modify any file. Use read/grep/find/ls and bash only for inspection (git diff, git status, running a test is fine). Never run git commands that change the working tree or index (checkout, restore, reset, stash, clean, add, commit): the change under review may be uncommitted. Ignore ${P}/ except the spec you are given.
+Do not modify any file. Use read/grep/find/ls and bash only for inspection (git diff, git status, running a test is fine). Never run git commands that change the working tree or index (checkout, restore, reset, stash, clean, add, commit): the change under review may be uncommitted. Ignore .pi/ except the spec you are given.
 
 The harness already ran this feature's check on the current tree; the result is in the brief. Don't re-run the full suite; run a specific test only when you need evidence. Read the diff file by file.
 
 Check:
 - The spec's acceptance criteria, one by one: met or not met, with evidence (file:line or test name). Each task's acceptance too.
 - The spec's decisions respected, including the rejected alternatives ("Not doing X"): flag anything the build brought back.
+- The builder's assumptions (Decisions entries starting "Assumption (build):"): the choices it made where the spec was ambiguous. Flag any that look wrong or second-best.
 - Missing cases, error handling, convention breaks, changes outside the spec's scope, debug output, commented-out code or leftover TODOs.
 - Tests, according to the spec's "New tests" line: when it is yes, tests that don't really test the behaviour, and missing tests for new behaviour; either way, existing tests that were deleted, skipped, disabled or weakened.
 - Comments that restate the code, narrate history ("changed from", "now uses", task ids), mislead, or were left wrong by the change. The rule the build followed: ${COMMENT_RULES}

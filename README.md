@@ -36,7 +36,6 @@ you: "Only PENDING orders. Not soft delete: audit lives elsewhere."
      ideas), context, acceptance criteria, tasks with their test commands
 /pb:build
    → a new session with nothing in it but the spec
-   → gap check: Pi reads the spec and the code, asks about anything unclear
    → T1 → check ✓ → T2 → check ✗ → fix → ✓ → … → full suite ✓
    ✅ BUILD COMPLETE
 /pb:review
@@ -50,6 +49,11 @@ you: "Only PENDING orders. Not soft delete: audit lives elsewhere."
   of ideas you dropped. The build session never sees it, so they can't creep
   back, and the spec has to be complete. Rejected ideas are written into the
   spec ("Not doing X, because …") so they stay rejected.
+- **The build just builds.** It treats the spec as settled. Where the spec is
+  unclear or doesn't match the code, it picks the best solution, records it as
+  an assumption in the spec, and carries on: you see the list at the end, and
+  the reviewer checks it. Spec problems are meant to be caught earlier: before
+  writing a spec, `/pb:spec` checks it against itself and the code.
 - **The harness decides when a task is done.** The agent finishes each task
   through a tool; the harness then runs the task's check (its tests, a compile,
   or nothing: you choose per spec). A failure goes back to the agent with the
@@ -60,7 +64,7 @@ you: "Only PENDING orders. Not soft delete: audit lives elsewhere."
 - **Fresh eyes where they pay.** The only separate model call is the review: a
   reviewer who never saw the build's reasoning isn't anchored by it.
 - **Structured, not parsed from prose.** The agent reports through tools
-  (`pb_write_spec`, `pb_spec_gaps`, `pb_task_done`, `pb_record_decision`),
+  (`pb_write_spec`, `pb_task_done`, `pb_record_decision`),
   so formats can't drift.
 
 ## The spec

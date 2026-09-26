@@ -18,8 +18,7 @@ shows a short **What now** block; `/pb:help <topic>` posts any section below.
    tasks. Read it in `.pi/pb/specs/<name>/spec.md`. Revise by talking and running
    `/pb:spec` again.
 3. **`/pb:build`**: a **new session** opens with nothing in it but the spec.
-   Pi first checks the spec against the code and asks about any gaps, then the
-   tasks run one by one, each behind a check the harness runs.
+   The tasks run one by one, each behind a check the harness runs.
 4. **`/pb:review`**: a fresh reviewer compares the change with the spec.
    Fix any findings in the build session, commit, and `/pb:archive`.
 
@@ -78,7 +77,8 @@ with its detail, an `- Acceptance:` line and optionally `- Test: \`command\``.
 - **Several features from one conversation?** One spec each: each is built,
   reviewed and committed on its own. `Depends on:` orders them; building one
   before its dependency asks you first. Write them all while the discussion is
-  fresh: the next build's gap check catches drift.
+  fresh; when a later build finds the code has moved on, it resolves the
+  difference and lists what it chose.
 - **Small related changes** can share a spec.
 - **You can edit a spec by hand.** It just has to keep the format.
 <!-- /pb -->
@@ -89,15 +89,26 @@ with its detail, an `- Acceptance:` line and optionally `- Test: \`command\``.
 `/pb:build` (pick a spec if there are several) opens a new session named after
 it. Inside:
 
-1. **The gap check.** Before any code, Pi reads the spec and the code it points
-   to and reports gaps, contradictions or drift. If there are any, the build
-   pauses: answer in chat, and `/pb:build` starts the tasks.
-2. **The tasks.** The harness hands them out one at a time. When Pi says a task
+1. **The tasks.** The build starts with T1 straight away; the harness hands the
+   tasks out one at a time. When Pi says a task
    is done, the harness runs its check. Pass: next task. Fail: the output goes
    back to Pi to fix the root cause, up to `maxAttempts` times, then the build
    pauses for you.
-3. **The end.** After the last task, the full test suite runs once (when the
+2. **The end.** After the last task, the full test suite runs once (when the
    verification is `tests`), and the build is complete.
+
+The build treats the spec as settled: it implements, it doesn't re-plan. Where
+the spec is ambiguous, contradicts itself or doesn't match the code, Pi doesn't
+stop to ask: it picks the best solution (even when that is more work), records
+it in the spec's Decisions as an **assumption**, and carries on. The build
+summary lists these choices and the reviewer checks them, so you look once, at
+the end. Pi stops with a question only when a choice would change behaviour, an
+API or data in a way that is costly to undo. It also ignores everything under
+`.pi/` except its spec.
+
+Most such problems are caught earlier anyway: before writing a spec, `/pb:spec`
+checks it against itself and the code (examples against rules, "unchanged"
+against "extended", every path and name), resolves what it finds, and tells you.
 
 While it runs, this is an ordinary Pi session: watch, interrupt with Esc, ask
 things. **Decisions you make here** are written into the spec's Decisions
@@ -142,7 +153,7 @@ failure (it's in the session), then:
   then `/pb:build <what to do differently>`.
 - **The build session is gone** (a crash, or you closed it): `/pb:build` from
   any other session offers the spec again as "restart the build"; finished
-  tasks stay done, and the new session starts with the gap check.
+  tasks stay done, and the new session continues with the first open task.
 - **The task or the spec is wrong**: go back to your planning session and
   `/pb:spec <name>` to rewrite it (done tasks keep their status), then
   `/pb:build` in the build session.
@@ -195,7 +206,8 @@ between, the undone work shows up as uncommitted changes (you're warned).
   build knows.
 - **Write rejected ideas into the spec.** "Not doing X, because …" stops them
   from coming back.
-- **Answer the gap check properly**: it's the cheapest bug you'll ever fix.
+- **Read what `/pb:spec` resolved, and the build's assumptions**: that's where
+  a wrong guess shows up cheapest.
 - **Nudge with `/pb:build <hint>`; undo when the code is wrong; rewrite the
   spec when the plan is wrong.**
 - **Review in the build session, then commit** before building the next spec.
@@ -230,13 +242,6 @@ between, the undone work shows up as uncommitted changes (you're warned).
 **What now** ({task} keeps failing its check)
 - Read the failure above. `/pb:build <hint or different approach>` gives {task} a fresh set of attempts.
 - Code went somewhere bad? `/pb:undo {task}`, then `/pb:build <what to do differently>` · more: `/pb:help stuck`
-<!-- /pb -->
-
-### Gaps in the spec
-<!-- pb:tip build.gaps -->
-**What now**
-- Answer the gaps here, in chat: your decisions go into the spec.
-- Then `/pb:build` starts T1. The spec is badly off? Fix it with `/pb:spec` in your planning session.
 <!-- /pb -->
 
 ### Build complete

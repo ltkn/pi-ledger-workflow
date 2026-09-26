@@ -107,29 +107,24 @@ export default function pb(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pb_spec_gaps",
-    label: "Spec gaps",
-    description: "In a pb build session, before any code: report gaps, contradictions or mismatches between the spec and the code (an empty list if none).",
-    parameters: Type.Object({ gaps: Type.Array(Type.String(), { description: "one precise gap per item, with where it matters" }) }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const { store, progress } = specOfSession(ctx);
-      if (!progress) throw new Error("This is not a pb build session.");
-      progress.gaps = params.gaps.map((g) => g.trim()).filter(Boolean);
-      store.saveProgress(progress);
-      return { content: [{ type: "text", text: progress.gaps.length ? "Recorded; the human will answer them." : "Recorded: no gaps." }], details: undefined, terminate: true };
-    },
-  });
-
-  pi.registerTool({
     name: "pb_record_decision",
     label: "Record decision",
-    description: "In a pb build session: record a decision the human just made, in the spec's Decisions section, so it survives compaction and reaches the reviewer.",
-    parameters: Type.Object({ decision: Type.String({ description: "the decision, self-contained, in one or two sentences" }) }),
+    description:
+      "In a pb build session: record in the spec's Decisions a decision the human just made, or (assumption: true) a choice you made where the spec was ambiguous or didn't match the code, so it survives compaction and reaches the reviewer.",
+    parameters: Type.Object({
+      decision: Type.String({ description: "the decision or choice, self-contained, with its reason, in one or two sentences" }),
+      assumption: Type.Optional(Type.Boolean({ description: "true when it is your choice, not the human's" })),
+    }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const { store, name } = specOfSession(ctx);
+      const { store, name, progress } = specOfSession(ctx);
       const md = name ? store.readSpec(name) : undefined;
-      if (!name || !md) throw new Error("This is not a pb build session.");
-      store.writeSpec(name, addDecision(md, params.decision));
+      if (!name || !md || !progress) throw new Error("This is not a pb build session.");
+      const text = params.assumption ? `Assumption (build${progress.current ? `, ${progress.current}` : ""}): ${params.decision}` : params.decision;
+      store.writeSpec(name, addDecision(md, text));
+      if (params.assumption) {
+        progress.assumptions = [...(progress.assumptions ?? []), text];
+        store.saveProgress(progress);
+      }
       return { content: [{ type: "text", text: "Recorded in the spec's Decisions." }], details: undefined };
     },
   });
@@ -206,8 +201,8 @@ export default function pb(pi: ExtensionAPI) {
 
   /* --------------------------------- build ------------------------------- */
 
-  /** Snapshot and hand the agent a task (a new task gets an undo entry). */
-  const startTask = (ctx: ExtensionContext, store: Store, p: Progress, taskId: string, guidance = "") => {
+  /** Snapshot and mark a task as started (a new task gets an undo entry); returns what to tell the agent. */
+  const beginTask = (ctx: { cwd: string }, store: Store, p: Progress, taskId: string, guidance = ""): { marker: string; prompt: string } | undefined => {
     const loaded = loadSpec(store, p.spec);
     const task = loaded?.spec.tasks.find((t) => t.id === taskId);
     const tp = p.tasks.find((t) => t.id === taskId);
@@ -228,7 +223,16 @@ export default function pb(pi: ExtensionAPI) {
     p.pause = undefined;
     p.phase = "building";
     store.saveProgress(p);
-    instruct(`▶ ${taskId}: ${task.title}${tp.attempts > 1 ? ` (attempt ${tp.attempts})` : ""}`, taskPrompt(task, tp.attempts, cfg.maxAttempts) + (guidance ? `\n\nFrom the human: ${guidance}` : ""));
+    return {
+      marker: `▶ ${taskId}: ${task.title}${tp.attempts > 1 ? ` (attempt ${tp.attempts})` : ""}`,
+      prompt: taskPrompt(task, tp.attempts, cfg.maxAttempts) + (guidance ? `\n\nFrom the human: ${guidance}` : ""),
+    };
+  };
+
+  /** Start a task in the current session. */
+  const startTask = (ctx: ExtensionContext, store: Store, p: Progress, taskId: string, guidance = "") => {
+    const t = beginTask(ctx, store, p, taskId, guidance);
+    if (t) instruct(t.marker, t.prompt);
   };
 
   const pause = (store: Store, p: Progress, reason: string, tipKey: string, vars: Record<string, string | number> = {}) => {
@@ -279,22 +283,10 @@ export default function pb(pi: ExtensionAPI) {
   let driving = false;
   const drive = async (ctx: ExtensionContext) => {
     const { store, progress: p } = specOfSession(ctx);
-    if (driving || !p || (p.phase !== "checking" && p.phase !== "building")) return;
+    if (driving || !p || p.phase !== "building") return;
     const loaded = loadSpec(store, p.spec);
     if (!loaded) return pause(store, p, `${store.rel("specs", p.spec, "spec.md")} no longer parses; fix it, then /${cmd("build")}.`, "build.paused");
 
-    if (p.phase === "checking") {
-      if (!p.gaps) return pause(store, p, "the spec check ended without a report.", "build.paused");
-      if (p.gaps.length) {
-        p.phase = "paused";
-        p.pause = "spec gaps";
-        store.saveProgress(p);
-        store.event(p.spec, { type: "pause", why: "gaps", count: p.gaps.length });
-        return post(`**⏸ Gaps in the spec** — answer them here before any code is written:\n\n${p.gaps.map((g, i) => `${i + 1}. ${g}`).join("\n")}\n\n${tip("build.gaps")}`);
-      }
-      const first = nextTodo(p);
-      return first ? startTask(ctx, store, p, first.id) : undefined;
-    }
 
     const r = p.report;
     if (!r || r.task !== p.current) return pause(store, p, "the agent stopped without finishing its task (a question in chat, or you stopped it).", "build.paused");
@@ -359,6 +351,7 @@ export default function pb(pi: ExtensionAPI) {
           ...p.tasks.map(taskLine),
           "```",
           `Check: ${p.lastVerify?.summary.split("\n")[0] ?? `none (verification ${loaded.spec.gate})`}`,
+          p.assumptions?.length ? `\nChoices the build made where the spec was unclear (in the spec's Decisions; the review checks them):\n${p.assumptions.map((a) => `- ${a}`).join("\n")}` : "",
           "",
           tip("build.done", { spec: p.spec }),
         ].join("\n"),
@@ -381,7 +374,7 @@ export default function pb(pi: ExtensionAPI) {
     const u = m.usage;
     store.event(name, {
       type: "usage",
-      task: progress.current ?? (progress.phase === "checking" ? "gaps" : "chat"),
+      task: progress.current ?? "chat",
       input: u.input ?? 0,
       output: u.output ?? 0,
       cacheRead: u.cacheRead ?? 0,
@@ -409,9 +402,9 @@ export default function pb(pi: ExtensionAPI) {
           const md = store.readSpec(p.spec);
           if (md) store.writeSpec(p.spec, addDecision(md, guidance));
         }
-        if (p.pause === "spec gaps" || (p.phase === "checking" && !p.current)) {
+        if (!p.current) {
           const first = nextTodo(p);
-          return first ? startTask(ctx, store, p, first.id, guidance) : undefined;
+          return first ? startTask(ctx, store, p, first.id, guidance) : ctx.ui.notify("Nothing left to build here.", "info");
         }
         if (p.current === "final") {
           const fin = p.tasks.find((t) => t.id === "final");
@@ -464,7 +457,7 @@ export default function pb(pi: ExtensionAPI) {
       const restart = !!prev && unfinished(name);
       const p: Progress = {
         spec: name,
-        phase: "checking",
+        phase: "building",
         baseCommit: restart ? (prev!.baseCommit ?? gitHead(ctx.cwd)) : gitHead(ctx.cwd),
         tasks: syncTasks(spec, prev?.tasks).map((t) => (t.status === "done" ? t : { ...t, status: "todo" as const, attempts: 0 })),
         updatedAt: now(),
@@ -473,6 +466,8 @@ export default function pb(pi: ExtensionAPI) {
         const snap = snapshot(ctx.cwd, `pb: start of ${name}`);
         store.saveCheckpoints(name, snap ? [{ id: "start", at: now(), ...snap, head: p.baseCommit, tasks: structuredClone(p.tasks) }] : []);
       }
+      const first = p.tasks.find((t) => t.status !== "done")?.id;
+      if (!first) return ctx.ui.notify(`Every task of ${name} is done. Next: /${cmd("review")} ${name}.`, "info");
       const seed = buildSeed(name, md, spec, testCmd, buildCmd);
       const parent = ctx.sessionManager.getSessionFile();
       const result = await ctx.newSession({
@@ -489,13 +484,16 @@ export default function pb(pi: ExtensionAPI) {
           await c.sendMessage(
             {
               customType: "pb",
-              content: `▶ Building **${name}** from ${store.rel("specs", name!, "spec.md")}. First, a check of the spec against the code.\nThis session: "build: ${name}" · back to it with /resume, or \`pi --session ${c.sessionManager.getSessionId()}\``,
+              content: `▶ Building **${name}** from ${store.rel("specs", name!, "spec.md")}.\nThis session: "build: ${name}" · back to it with /resume, or \`pi --session ${c.sessionManager.getSessionId()}\``,
               display: true,
             },
             { triggerTurn: false },
           );
           // Not awaited: the build runs on in this session, driven by agent_settled, while the command returns.
-          void c.sendMessage({ customType: "pb-instruction", content: seed, display: false }, { triggerTurn: true });
+          // The spec and the first open task go out together: the build starts building.
+          const task = beginTask(c, store, p, first)!;
+          await c.sendMessage({ customType: "pb", content: task.marker, display: true }, { triggerTurn: false });
+          void c.sendMessage({ customType: "pb-instruction", content: `${seed}\n\n${task.prompt}`, display: false }, { triggerTurn: true });
         },
       });
       if (result.cancelled) ctx.ui.notify("Build cancelled.", "info");

@@ -167,9 +167,8 @@ Create T2.txt.
 }
 `;
 
-/** An agent that reports no gaps, then does each task by creating <task>.txt. */
+/** An agent that does each task by creating <task>.txt. */
 const diligent: Script = async (text, tool) => {
-  if (text.includes("call pb_spec_gaps")) return void (await tool("pb_spec_gaps", { gaps: [] }));
   const task = text.match(/Task (T\d+)/)?.[1] ?? text.match(/task "(\w+)"/)?.[1];
   if (!task) return;
   if (task !== "final") fs.writeFileSync(`${task}.txt`, "x");
@@ -248,7 +247,7 @@ test("pb_write_spec rejects a spec that doesn't parse, and a bad name", async ()
 
 /* ------------------------------------- build ------------------------------------- */
 
-test("build: fresh session, gap check, tasks behind their tests, then the full suite", async () => {
+test("build: fresh session starting with T1, tasks behind their tests, then the full suite", async () => {
   const t = setup({ verify: "test -f T1.txt && test -f T2.txt" });
   await written(t);
   t.agent.script = diligent;
@@ -259,7 +258,8 @@ test("build: fresh session, gap check, tasks behind their tests, then the full s
   assert.equal(t.names.get(p.session), "build: order-cancellation");
   assert.ok(t.posts.some((x) => /This session: "build: order-cancellation" · back to it with \/resume, or `pi --session build-session-1`/.test(x)));
   assert.deepEqual(p.tasks.map((x: any) => [x.id, x.status]), [["T1", "done"], ["T2", "done"]]);
-  assert.match(t.instructions[0], /fresh session, from the spec below and nothing else[\s\S]*call pb_spec_gaps[\s\S]*# Order cancellation/);
+  assert.match(t.instructions[0], /fresh session, from the spec below and nothing else[\s\S]*# Order cancellation[\s\S]*Task T1\. Do only this task/);
+  assert.doesNotMatch(t.instructions[0], /pb_spec_gaps/);
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE — order-cancellation[\s\S]*PASS/);
   assert.match(t.read(".pi/pb/specs/order-cancellation/events.jsonl"), /"type":"check","task":"final"/); // full suite after the task tests
 });
@@ -285,7 +285,6 @@ test("build: after the last attempt it pauses; /pb:build resumes with a fresh se
   await written(t);
   let give = false;
   t.agent.script = async (text, tool) => {
-    if (text.includes("call pb_spec_gaps")) return void (await tool("pb_spec_gaps", { gaps: [] }));
     const task = text.match(/(?:Task|check for) (T\d+)/)?.[1];
     if (task === "T1" && !give) return void (await tool("pb_task_done", { task, status: "done", summary: "claimed" }));
     return diligent(text, tool);
@@ -300,21 +299,23 @@ test("build: after the last attempt it pauses; /pb:build resumes with a fresh se
   assert.match(t.read(".pi/pb/specs/order-cancellation/spec.md"), /- create the file in the repo root/); // guidance recorded as a decision
 });
 
-test("build: gaps pause before any code; questions pause mid-build", async () => {
+test("build: ambiguities become recorded assumptions (no pause); only real questions pause", async () => {
   const t = setup({ verify: "true" });
   await written(t);
   t.agent.script = async (text, tool) => {
-    if (text.includes("call pb_spec_gaps")) return void (await tool("pb_spec_gaps", { gaps: ["Is cancelling twice an error?"] }));
+    if (text.includes("Task T1")) await tool("pb_record_decision", { decision: "Follow the layout rules over the mockup: the rules are marked exact.", assumption: true });
     if (text.includes("Task T2")) return void (await tool("pb_task_done", { task: "T2", status: "question", summary: "", question: "Which file name?" }));
     return diligent(text, tool);
   };
   await t.run("build");
-  assert.match(t.posts.at(-1)!, /Gaps in the spec[\s\S]*1\. Is cancelling twice an error\?/);
-  assert.ok(!fs.existsSync(path.join(t.repo, "T1.txt")));
-
-  await t.run("build", "cancelling twice is a no-op");
-  assert.ok(fs.existsSync(path.join(t.repo, "T1.txt")));
+  assert.ok(fs.existsSync(path.join(t.repo, "T1.txt"))); // T1 went through without stopping
+  assert.match(t.read(".pi/pb/specs/order-cancellation/spec.md"), /- Assumption \(build, T1\): Follow the layout rules over the mockup/);
   assert.match(t.posts.at(-1)!, /Build paused\*\* — T2 question: Which file name\?/);
+
+  t.agent.script = diligent;
+  await t.run("build", "call it T2.txt");
+  const done = t.posts.at(-1)!;
+  assert.match(done, /BUILD COMPLETE[\s\S]*Choices the build made where the spec was unclear[\s\S]*Assumption \(build, T1\): Follow the layout rules/);
 });
 
 test("build: pb_task_done must name the current task", async () => {
@@ -322,7 +323,6 @@ test("build: pb_task_done must name the current task", async () => {
   await written(t);
   let err: string | undefined;
   t.agent.script = async (text, tool) => {
-    if (text.includes("call pb_spec_gaps")) return void (await tool("pb_spec_gaps", { gaps: [] }));
     if (text.includes("Task T1")) err ??= (await tool("pb_task_done", { task: "T2", status: "done", summary: "" })).error;
     return diligent(text, tool);
   };
@@ -478,4 +478,18 @@ test("an unfinished build (e.g. after a crash) can be restarted in a new session
   assert.equal(p.phase, "built");
   assert.match(p.session, /build-session-2\.jsonl$/);
   assert.equal(t.instructions.filter((i) => /Task T1/.test(i)).length, 1); // T1 wasn't redone
+});
+
+test("prompts: the build treats the spec as settled and resolves ambiguities itself; the spec gets a consistency pass", async () => {
+  const t = setup({ verify: "true" });
+  await written(t);
+  t.agent.script = diligent;
+  await t.run("build");
+  const seed = t.instructions[0];
+  assert.match(seed, /The planning is done: the design, the decisions and the tasks in the spec are settled/);
+  assert.match(seed, /choose the best solution[^.]*even when it is more work[\s\S]*pb_record_decision \(assumption: true\)/);
+  assert.match(seed, /Don't read or edit anything under \.pi\/ other than your spec/);
+  await t.run("spec");
+  assert.match(t.instructions.at(-1)!, /Before calling pb_write_spec, check the spec against itself and against the code[\s\S]*best solution/);
+  assert.match(t.instructions.at(-1)!, /State each fact once/);
 });

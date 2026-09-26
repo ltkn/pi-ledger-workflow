@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **No more gap check at the start of a build**: it cost too much context and stopped the build over points the model could resolve itself. The build now starts with T1 and treats the spec as settled. Where the spec is ambiguous, contradicts itself or doesn't match the code, the builder picks the best solution (even when it is more work), records it as an assumption in the spec's Decisions (`pb_record_decision` with `assumption: true`) and carries on; it stops only for choices that change behaviour, an API or data and are costly to undo. The build summary lists the assumptions and the reviewer checks them. `pb_spec_gaps` is removed
+- `/pb:spec` runs a consistency pass before writing (examples against rules, acceptance against tasks, "unchanged" against "extended", every path and name against the code), resolves what it finds with the best solution, and tells you; specs state each fact once
+- The build ignores `.pi/` except its spec
+
 ## 1.0.0
 
 pb replaces wf: a simpler flow built around a self-contained spec, a fresh build session and harness-run checks. Renamed from pi-ledger-workflow to **pi-plan-build**.
