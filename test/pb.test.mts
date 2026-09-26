@@ -11,6 +11,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+process.env.PI_PB_PI_COMMAND = path.join(path.dirname(new URL(import.meta.url).pathname), "mock-pi.mjs");
 const { default: pb } = await import("../extensions/pb/index.ts");
 const { parseSpec, addDecision } = await import("../extensions/pb/spec.ts");
 
@@ -23,44 +24,84 @@ function setup(config: object = {}) {
   fs.mkdirSync(path.join(repo, ".pi/pb"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".pi/pb/config.json"), JSON.stringify({ build: null, maxAttempts: 2, ...config }));
 
-  const cmds: Record<string, any> = {};
-  const tools: Record<string, any> = {};
-  const handlers: Record<string, ((e: object, ctx: object) => unknown)[]> = {};
   const posts: string[] = [];
   const notes: string[] = [];
   const instructions: string[] = [];
   const selects: string[] = [];
-  let activeTools = ["read", "bash", "edit", "write", "grep"];
-  let sessionFile = path.join(repo, "planning-session.jsonl");
-  let sessions = 0;
+  const blocked: string[] = [];
   const agent: { script?: Script } = {};
+  let sessions = 0;
 
-  const ctx: any = {
-    cwd: repo,
-    mode: "print",
-    hasUI: true,
-    isIdle: () => true,
-    sessionManager: { getSessionFile: () => sessionFile },
-    ui: {
-      notify: (m: string) => notes.push(m),
-      setWidget: () => {},
-      setStatus: () => {},
-      select: async (_t: string, opts: string[]) => selects.shift() ?? opts[0],
-      confirm: async () => true,
-      input: async () => "",
-    },
-    newSession: async (opts: { withSession?: (c: object) => Promise<void> }) => {
-      sessionFile = path.join(repo, `build-session-${++sessions}.jsonl`);
-      await opts.withSession?.({ ...ctx, sendMessage: async (m: any, o: any) => pi.sendMessage(m, o) });
-      return { cancelled: false };
-    },
+  // Like Pi: every session gets its own runtime and extension instance; after a session
+  // replacement, the old pi and ctx are stale and throw if used.
+  type Runtime = { cmds: Record<string, any>; tools: Record<string, any>; handlers: Record<string, ((e: object, ctx: object) => unknown)[]>; pi: any; ctx: any; stale: boolean };
+  let rt: Runtime;
+  const guard = <T extends object>(r: () => Runtime, target: T): T =>
+    new Proxy(target, {
+      get(obj, key, recv) {
+        if (r().stale) throw new Error(`stale: ${String(key)} used after session replacement`);
+        return Reflect.get(obj, key, recv);
+      },
+    });
+  const makeRuntime = (sessionFile: string): Runtime => {
+    const self = {} as Runtime;
+    const me = () => self;
+    self.cmds = {};
+    self.tools = {};
+    self.handlers = {};
+    self.stale = false;
+    self.pi = guard(me, {
+      registerCommand: (n: string, o: object) => (self.cmds[n] = o),
+      registerTool: (t: { name: string }) => (self.tools[t.name] = t),
+      on: (e: string, h: (e: object, ctx: object) => unknown) => (self.handlers[e] ??= []).push(h),
+      getActiveTools: () => ["read", "bash", "edit", "write"],
+      setActiveTools: () => {},
+      sendMessage: (m: { content: string; display?: boolean }, o?: { triggerTurn?: boolean }) => {
+        if (m.display) posts.push(m.content);
+        if (o?.triggerTurn) turn(m.content);
+      },
+      sendUserMessage: (t: string) => turn(t),
+    });
+    self.ctx = guard(me, {
+      cwd: repo,
+      mode: "print",
+      hasUI: true,
+      model: { provider: "p", id: "m", contextWindow: 100000 },
+      thinkingLevel: "low",
+      isIdle: () => true,
+      sessionManager: { getSessionFile: () => sessionFile },
+      ui: {
+        notify: (m: string) => notes.push(m),
+        setWidget: () => {},
+        setStatus: () => {},
+        select: async (_t: string, opts: string[]) => selects.shift() ?? opts[0],
+        confirm: async () => true,
+        input: async () => "",
+      },
+      newSession: async (opts: { withSession?: (c: object) => Promise<void> }) => {
+        self.stale = true;
+        rt = makeRuntime(path.join(repo, `build-session-${++sessions}.jsonl`));
+        const fresh = rt;
+        await opts.withSession?.({ ...fresh.ctx, sessionManager: fresh.ctx.sessionManager, sendMessage: async (m: any, o: any) => fresh.pi.sendMessage(m, o) });
+        return { cancelled: false };
+      },
+    });
+    pb(self.pi);
+    return self;
   };
+  rt = makeRuntime(path.join(repo, "planning-session.jsonl"));
 
-  // One agent run per instruction, queued like Pi's follow-ups; agent_settled after each.
+  // One agent run per instruction, queued like Pi's follow-ups; agent_settled after each, on the current runtime.
   let running: Promise<void> = Promise.resolve();
   const callTool: Tool = async (name, params) => {
+    const call = { toolName: name, input: params };
+    for (const h of rt.handlers.tool_call ?? []) {
+      const r = (await h({ type: "tool_call", ...call }, rt.ctx)) as { block?: boolean; reason?: string } | undefined;
+      if (r?.block) return blocked.push(`${name} ${(params as { path?: string }).path}`), { error: r.reason };
+    }
+    if (!rt.tools[name]) return {}; // a built-in tool: nothing to simulate
     try {
-      return await tools[name].execute("call", params, undefined, undefined, ctx);
+      return await rt.tools[name].execute("call", params, undefined, undefined, rt.ctx);
     } catch (e) {
       return { error: (e as Error).message };
     }
@@ -69,22 +110,11 @@ function setup(config: object = {}) {
     instructions.push(text);
     running = running.then(async () => {
       await agent.script?.(text, callTool);
-      for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+      const usage = { input: 1000, output: 100, cacheRead: 9000, cacheWrite: 0, cost: { total: 0.001 } };
+      for (const h of rt.handlers.message_end ?? []) await h({ type: "message_end", message: { role: "assistant", usage } }, rt.ctx);
+      for (const h of rt.handlers.agent_settled ?? []) await h({ type: "agent_settled" }, rt.ctx);
     });
   };
-  const pi: any = {
-    registerCommand: (n: string, o: object) => (cmds[n] = o),
-    registerTool: (t: { name: string }) => (tools[t.name] = t),
-    on: (e: string, h: (e: object, ctx: object) => unknown) => (handlers[e] ??= []).push(h),
-    getActiveTools: () => activeTools,
-    setActiveTools: (t: string[]) => (activeTools = t),
-    sendMessage: (m: { content: string; display?: boolean }, o?: { triggerTurn?: boolean }) => {
-      if (m.display) posts.push(m.content);
-      if (o?.triggerTurn) turn(m.content);
-    },
-    sendUserMessage: (t: string) => turn(t),
-  };
-  pb(pi);
 
   const settle = async () => {
     let prev: Promise<void>;
@@ -94,12 +124,12 @@ function setup(config: object = {}) {
     } while (prev !== running);
   };
   const run = async (name: string, args = "") => {
-    await cmds[`pb:${name}`].handler(args, ctx);
+    await rt.cmds[`pb:${name}`].handler(args, rt.ctx);
     await settle();
   };
   const read = (f: string) => fs.readFileSync(path.join(repo, f), "utf8");
   const progress = (name: string) => JSON.parse(read(`.pi/pb/specs/${name}/progress.json`));
-  return { repo, cmds, tools, posts, notes, instructions, selects, agent, run, read, progress, callTool, settle, tools_: () => activeTools };
+  return { repo, posts, notes, instructions, selects, blocked, agent, run, read, progress, callTool, settle, runtime: () => rt };
 }
 
 const SPEC = (opts: { verification?: string; newTests?: string; tasks?: string } = {}) => `# Order cancellation
@@ -171,16 +201,34 @@ test("spec: decisions are added under Decisions, before the next section", () =>
 
 /* --------------------------------- plan and spec --------------------------------- */
 
-test("plan turns editing off and back on; spec asks for pb_write_spec", async () => {
+test("plan: investigation is free, project files are protected until /pb:plan off; spec asks for pb_write_spec", async () => {
   const t = setup({ verify: "true" });
   process.chdir(t.repo);
-  await t.run("plan", "Add order cancellation");
-  assert.deepEqual(t.tools_(), ["read", "bash", "grep"]);
-  assert.match(t.instructions.at(-1)!, /\[pb:plan\] Add order cancellation[\s\S]*run `true` once/);
+  await t.run("plan", "let admins cancel pending orders");
+  assert.match(t.instructions.at(-1)!, /\[pb:plan\] let admins cancel pending orders[\s\S]*curl an API, write and run one-off scripts[\s\S]*run `true` once/);
+  const scratch = path.join(os.tmpdir(), "pb-scratch.py");
+  assert.equal((await t.callTool("write", { path: scratch, content: "print(1)" })).error, undefined); // outside the project: fine
+  assert.match((await t.callTool("write", { path: "src/Order.java", content: "x" })).error!, /Planning mode: the project's files stay untouched/);
+  assert.match((await t.callTool("edit", { path: path.join(t.repo, "README"), edits: [] })).error!, /Planning mode/);
   await t.run("plan", "off");
-  assert.ok(t.tools_().includes("edit") && t.tools_().includes("write"));
+  assert.equal((await t.callTool("write", { path: "src/Order.java", content: "x" })).error, undefined);
+  await t.run("plan");
+  assert.match(t.notes.at(-1)!, /Describe what you want, in your own words/);
   await t.run("spec");
   assert.match(t.instructions.at(-1)!, /calling the pb_write_spec tool[\s\S]*Not doing X, because/);
+});
+
+test("plan mode stays with its session, not with the build session", async () => {
+  const t = setup({ verify: "true" });
+  process.chdir(t.repo);
+  await t.run("plan", "x");
+  await written(t);
+  t.agent.script = async (text, tool) => {
+    if (text.includes("Task T1")) assert.equal((await tool("write", { path: "T1.src", content: "x" })).error, undefined); // editing works in the build
+    return diligent(text, tool);
+  };
+  await t.run("build");
+  assert.equal(t.progress("order-cancellation").phase, "built");
 });
 
 test("pb_write_spec rejects a spec that doesn't parse, and a bad name", async () => {
@@ -320,4 +368,106 @@ test("status lists every spec with its state and tasks", async () => {
   await written(t);
   await t.run("status");
   assert.match(t.notes.at(-1)!, /order-cancellation — written · verification tests/);
+});
+
+/* ------------------------------ review, stats, archive ------------------------------ */
+
+test("review: fresh check, then a fresh reviewer with the spec and the diff; pass marks it reviewed", async () => {
+  const t = setup({ verify: "true" });
+  await written(t);
+  t.agent.script = diligent;
+  await t.run("build");
+  const briefFile = path.join(os.tmpdir(), `pb-brief-${process.pid}.md`);
+  process.env.MOCK_BRIEF_OUT = briefFile;
+  await t.run("review");
+  delete process.env.MOCK_BRIEF_OUT;
+  const brief = fs.readFileSync(briefFile, "utf8");
+  assert.match(brief, /## Changed files\n\n(T1\.txt\n)?[\s\S]*T2\.txt/);
+  assert.match(brief, /## The check the harness ran\n\n`true` → PASS/);
+  assert.match(brief, /## The spec[\s\S]*Not doing soft delete/);
+  assert.match(t.posts.at(-1)!, /Review of order-cancellation\*\* — ✅ PASS[\s\S]*src\/order\.ts:12/);
+  assert.doesNotMatch(t.posts.at(-1)!, /VERDICT:/);
+  assert.equal(t.progress("order-cancellation").phase, "reviewed");
+
+  process.env.MOCK_REVIEW = "changes_needed";
+  await t.run("review");
+  delete process.env.MOCK_REVIEW;
+  assert.match(t.posts.at(-1)!, /✗ CHANGES NEEDED/);
+});
+
+test("stats: tasks, first try, checks, pauses, review, and the build session's tokens and cache", async () => {
+  const t = setup({ verify: "true" });
+  await written(t);
+  let lazy = true;
+  t.agent.script = async (text, tool) => {
+    if (text.includes("Task T1") && lazy) {
+      lazy = false;
+      return void (await tool("pb_task_done", { task: "T1", status: "done", summary: "claimed" }));
+    }
+    return diligent(text, tool);
+  };
+  await t.run("build");
+  await t.run("review");
+  await t.run("stats");
+  const card = t.posts.at(-1)!;
+  if (process.env.SHOW_STATS) console.log(card);
+  assert.match(card, /Tasks +2 of 2 done · first try 1\/2 \(50%\) · 3 task checks · most: T1 \(2\)/);
+  assert.match(card, /Checks +4 run, 1 failed/); // T1 ×2, T2, final
+  assert.match(card, /Review +pass/);
+  assert.match(card, /prompt [\d.]+k \(90% from cache\)/);
+  assert.match(card, /Context +peak 10\.0k \(10% of 100\.0k\)/);
+  assert.match(card, /Reviewer +prompt 3\.0k · output 400 · \$0\.02/);
+
+  await t.run("stats", "all");
+  assert.match(t.posts.at(-1)!, /order-cancellation +2\/2 +50%/);
+});
+
+test("archive moves a finished spec out of .pi/pb/, and stats still see it", async () => {
+  const t = setup({ verify: "true" });
+  await written(t);
+  t.agent.script = diligent;
+  await t.run("build");
+  await t.run("archive");
+  assert.ok(!fs.existsSync(path.join(t.repo, ".pi/pb/specs/order-cancellation")));
+  const archived = fs.readdirSync(path.join(t.repo, ".pi/pb-archive")).filter((d) => d.endsWith("order-cancellation"));
+  assert.equal(archived.length, 1);
+  assert.doesNotMatch(execSync("git status --porcelain", { cwd: t.repo, encoding: "utf8" }), /pb-archive/);
+  await t.run("stats", "all");
+  assert.match(t.posts.at(-1)!, /order-cancellation +2\/2/);
+});
+
+test("help: every What-now block the code uses exists in the guide, and /pb:help lists the topics", async () => {
+  const { tip } = await import("../extensions/pb/help.ts");
+  const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "../extensions/pb");
+  const src = ["index.ts", "prompts.ts"].map((f) => fs.readFileSync(path.join(dir, f), "utf8")).join("\n");
+  const keys = new Set([...src.matchAll(/tip\(\s*"([\w.-]+)"/g)].map((m) => m[1]));
+  for (const k of ["build.paused", "build.paused-attempts", "review.pass", "review.changes", "review.other"]) keys.add(k);
+  for (const k of keys) assert.ok(tip(k).startsWith("**What now**"), `missing tip ${k}`);
+  const t = setup();
+  process.chdir(t.repo);
+  await t.run("help");
+  assert.match(t.posts.at(-1)!, /\/pb:help build` — Building/);
+});
+
+test("an unfinished build (e.g. after a crash) can be restarted in a new session; finished tasks stay done", async () => {
+  const t = setup({ verify: "true" });
+  await written(t);
+  let stop = true;
+  t.agent.script = async (text, tool) => {
+    if (text.includes("Task T2") && stop) return; // the session "dies" before T2 finishes
+    return diligent(text, tool);
+  };
+  await t.run("build");
+  assert.equal(t.progress("order-cancellation").phase, "paused");
+  stop = false;
+  process.chdir(t.repo);
+  // Back in some other session: the spec is offered for a restart.
+  const r = t.runtime();
+  r.ctx.sessionManager.getSessionFile = () => path.join(t.repo, "elsewhere.jsonl");
+  t.selects.push("order-cancellation (restart the build, finished tasks stay done)");
+  await t.run("build");
+  const p = t.progress("order-cancellation");
+  assert.equal(p.phase, "built");
+  assert.match(p.session, /build-session-2\.jsonl$/);
+  assert.equal(t.instructions.filter((i) => /Task T1/.test(i)).length, 1); // T1 wasn't redone
 });

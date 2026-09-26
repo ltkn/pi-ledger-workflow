@@ -3,27 +3,39 @@
  * build it in a fresh session task by task behind a check the harness runs, and
  * have it reviewed with fresh eyes.
  *
- *   /pb:plan <feature>     plan together (edit/write off)
+ *   /pb:plan <what you want> plan together; the project's files stay untouched
  *   /pb:spec [which]       write the spec(s) from the discussion
  *   /pb:build [name]       build a spec in a new session; resumes after a pause
+ *   /pb:review [focus]     fresh, independent review of the build against the spec
  *   /pb:undo [id]          restore the working tree to before a task
+ *   /pb:stats [all]        tasks, attempts, checks, tokens and cache per spec
+ *   /pb:archive [name]     move a finished spec out of the way
  *   /pb:status             every spec and where it stands
  *   /pb:help [topic]       what to do next
  *
  * Inspired by GVS5H (Gao et al., arXiv:2608.26480): small tasks, a verifier that
  * outranks the model's own "done", and fresh eyes against anchoring.
  */
+import * as path from "node:path";
 import { StringEnum, Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { changedPaths, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
-import { buildSeed, fixPrompt, planPrompt, specPrompt, taskPrompt } from "./prompts.ts";
+import { REVIEWER_SYSTEM, buildSeed, fixPrompt, planPrompt, reviewerBrief, specPrompt, taskPrompt } from "./prompts.ts";
+import { runFresh } from "./runner.ts";
+import { loadStats, renderAll, renderCard } from "./stats.ts";
 import { type ParsedSpec, SPEC_NAME, addDecision, parseSpec } from "./spec.ts";
-import { type Checkpoint, type Progress, type Report, type TaskProgress, PREFIX, Store, gitHead, now } from "./store.ts";
+import { type Checkpoint, type Progress, type Report, type TaskProgress, PREFIX, Store, changedSince, diffStat, gitHead, now } from "./store.ts";
 import { resolveBuild, resolveVerify, runVerify } from "./verify.ts";
 
 const cmd = (verb: string) => `${PREFIX}:${verb}`;
-const EDIT_TOOLS = ["edit", "write"];
+
+/** Spec names for argument completion (completions run without a ctx, in Pi's working directory). */
+const specCompletions = (prefix: string) =>
+  new Store(process.cwd())
+    .specNames()
+    .filter((n) => n.startsWith(prefix))
+    .map((n) => ({ value: n, label: n }));
 
 export default function pb(pi: ExtensionAPI) {
   /* ------------------------------- helpers ------------------------------- */
@@ -145,25 +157,41 @@ export default function pb(pi: ExtensionAPI) {
   /* --------------------------------- plan -------------------------------- */
 
   pi.registerCommand(cmd("plan"), {
-    description: "Plan a feature together (editing off). /pb:plan off turns editing back on",
+    description: "Plan something with Pi: /pb:plan <describe what you want to build or change, in your own words>. Pi can run anything to investigate but won't touch the project's files. /pb:plan off ends that",
     handler: async (args, ctx) => {
       const arg = args.trim();
-      if (arg === "off") {
-        pi.setActiveTools([...new Set([...pi.getActiveTools(), ...EDIT_TOOLS])]);
-        return ctx.ui.notify("Planning mode off: editing is back on.", "info");
-      }
-      if (!arg) return ctx.ui.notify(`Usage: /${cmd("plan")} <feature>`, "warning");
       const store = new Store(ctx.cwd);
+      const session = ctx.sessionManager.getSessionFile();
+      if (arg === "off") {
+        if (session) store.setPlanning(session, false);
+        return ctx.ui.notify("Planning mode off: Pi can change the project's files again.", "info");
+      }
+      if (!arg)
+        return ctx.ui.notify(`Describe what you want, in your own words, e.g.\n/${cmd("plan")} let admins cancel an order while it is still pending, and notify the customer`, "warning");
+      if (session) store.setPlanning(session, true);
       const { testCmd } = commands(ctx.cwd, store);
-      pi.setActiveTools(pi.getActiveTools().filter((t) => !EDIT_TOOLS.includes(t)));
-      instruct(`▶ /${cmd("plan")} — ${arg} (editing off)`, planPrompt(arg, testCmd));
+      instruct(`▶ /${cmd("plan")} — ${arg} (the project's files stay untouched)`, planPrompt(arg, testCmd));
     },
+  });
+
+  // Planning mode: investigating is free (bash, curl, scripts, scratch files elsewhere), changing the project isn't.
+  pi.on("tool_call", (e, ctx) => {
+    const ev = e as { toolName: string; input: { path?: string } };
+    if (ev.toolName !== "edit" && ev.toolName !== "write") return;
+    const session = ctx.sessionManager.getSessionFile();
+    if (!session || !new Store(ctx.cwd).planningSessions().includes(session)) return;
+    const target = path.resolve(ctx.cwd, ev.input.path ?? "");
+    if (path.relative(ctx.cwd, target).startsWith("..") || path.isAbsolute(path.relative(ctx.cwd, target))) return;
+    return {
+      block: true,
+      reason: `Planning mode: the project's files stay untouched until /${cmd("build")}. Put scratch files outside the project (e.g. in a mktemp -d directory), or say what you would change.`,
+    };
   });
 
   /* --------------------------------- spec -------------------------------- */
 
   pi.registerCommand(cmd("spec"), {
-    description: "Write the spec(s) for what we planned; rerun to revise",
+    description: "Write the spec for what we planned (one per feature); run it again to revise. Optional: which feature",
     handler: async (args, ctx) => {
       const store = new Store(ctx.cwd);
       instruct(`▶ /${cmd("spec")}${args.trim() ? ` — ${args.trim()}` : ""}`, specPrompt(args.trim(), store.specNames()));
@@ -201,6 +229,7 @@ export default function pb(pi: ExtensionAPI) {
     p.phase = "paused";
     p.pause = reason;
     store.saveProgress(p);
+    store.event(p.spec, { type: "pause", why: p.report?.status === "question" || p.report?.status === "blocked" ? p.report.status : tipKey.replace("build.", ""), task: p.current });
     post(`**⏸ Build paused** — ${reason}\n\n${tip(tipKey, { spec: p.spec, ...vars })}`);
   };
 
@@ -254,6 +283,7 @@ export default function pb(pi: ExtensionAPI) {
         p.phase = "paused";
         p.pause = "spec gaps";
         store.saveProgress(p);
+        store.event(p.spec, { type: "pause", why: "gaps", count: p.gaps.length });
         return post(`**⏸ Gaps in the spec** — answer them here before any code is written:\n\n${p.gaps.map((g, i) => `${i + 1}. ${g}`).join("\n")}\n\n${tip("build.gaps")}`);
       }
       const first = nextTodo(p);
@@ -336,8 +366,28 @@ export default function pb(pi: ExtensionAPI) {
     await drive(ctx);
   });
 
+  // Stats: every model turn in a build session, with its tokens and cache use.
+  pi.on("message_end", (e, ctx) => {
+    const m = (e as { message?: { role?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } } }).message;
+    if (m?.role !== "assistant" || !m.usage) return;
+    const { store, name, progress } = specOfSession(ctx);
+    if (!name || !progress) return;
+    const u = m.usage;
+    store.event(name, {
+      type: "usage",
+      task: progress.current ?? (progress.phase === "checking" ? "gaps" : "chat"),
+      input: u.input ?? 0,
+      output: u.output ?? 0,
+      cacheRead: u.cacheRead ?? 0,
+      cacheWrite: u.cacheWrite ?? 0,
+      cost: u.cost?.total ?? 0,
+      window: (ctx.model as { contextWindow?: number } | undefined)?.contextWindow,
+    });
+  });
+
   pi.registerCommand(cmd("build"), {
-    description: "Build a spec in a fresh session, task by task behind a check. In a build session: resume after a pause",
+    description: "Build a spec in a new session, task by task, each checked. In a build session: continue after a pause (optionally with guidance)",
+    getArgumentCompletions: specCompletions,
     handler: async (args, ctx) => {
       if (!ctx.isIdle()) return ctx.ui.notify("Pi is busy. Wait for the current turn to finish.", "warning");
       const store = new Store(ctx.cwd);
@@ -373,15 +423,21 @@ export default function pb(pi: ExtensionAPI) {
         return startTask(ctx, store, p, cur, guidance);
       }
 
-      // Otherwise: pick a spec and open its build session.
-      const open = store.specNames().filter((n) => {
-        const ph = store.progress(n)?.phase;
-        return ph === "written" || ph === undefined;
-      });
+      // Otherwise: pick a spec and open its build session. Unfinished builds can be restarted
+      // in a new session (e.g. after a crash, or a lost session): finished tasks stay done.
+      const phaseOf = (n: string) => store.progress(n)?.phase ?? "written";
+      const unfinished = (n: string) => ["checking", "building", "paused"].includes(phaseOf(n));
+      const offered = store.specNames().filter((n) => phaseOf(n) === "written" || unfinished(n));
+      const labelOf = (n: string) => (unfinished(n) ? `${n} (restart the build, finished tasks stay done)` : n);
       let name = words[0] && store.readSpec(words[0]) ? words[0] : undefined;
       if (!name) {
-        if (!open.length) return ctx.ui.notify(`No spec ready to build. Write one with /${cmd("spec")}.`, "warning");
-        name = open.length === 1 || !ctx.hasUI ? open[0] : await ctx.ui.select("Build which spec?", open);
+        if (!offered.length) return ctx.ui.notify(`No spec ready to build. Write one with /${cmd("spec")}.`, "warning");
+        if (offered.length === 1 || !ctx.hasUI) name = offered[0];
+        else {
+          const labels = offered.map(labelOf);
+          const choice = await ctx.ui.select("Build which spec?", labels);
+          name = choice ? offered[labels.indexOf(choice)] : undefined;
+        }
         if (!name) return;
       }
       const loaded = loadSpec(store, name);
@@ -399,9 +455,15 @@ export default function pb(pi: ExtensionAPI) {
       }
 
       const prev = store.progress(name);
-      const p: Progress = { spec: name, phase: "checking", baseCommit: gitHead(ctx.cwd), tasks: syncTasks(spec, prev?.tasks), updatedAt: now() };
-      if (store.config().checkpoints) {
-        dropCheckpoints(ctx.cwd);
+      const restart = !!prev && unfinished(name);
+      const p: Progress = {
+        spec: name,
+        phase: "checking",
+        baseCommit: restart ? (prev!.baseCommit ?? gitHead(ctx.cwd)) : gitHead(ctx.cwd),
+        tasks: syncTasks(spec, prev?.tasks).map((t) => (t.status === "done" ? t : { ...t, status: "todo" as const, attempts: 0 })),
+        updatedAt: now(),
+      };
+      if (store.config().checkpoints && !(restart && store.checkpoints(name).length)) {
         const snap = snapshot(ctx.cwd, `pb: start of ${name}`);
         store.saveCheckpoints(name, snap ? [{ id: "start", at: now(), ...snap, head: p.baseCommit, tasks: structuredClone(p.tasks) }] : []);
       }
@@ -413,7 +475,8 @@ export default function pb(pi: ExtensionAPI) {
           p.session = c.sessionManager.getSessionFile();
           store.saveProgress(p);
           store.event(name!, { type: "build-start", tasks: spec.tasks.length, gate: spec.gate });
-          pi.setActiveTools([...new Set([...pi.getActiveTools(), ...EDIT_TOOLS])]);
+          // Only `c` from here on: the captured pi and ctx belong to the replaced session.
+          // The new session gets a fresh runtime with the default tools, so editing is on.
           await c.sendMessage({ customType: "pb", content: `▶ Building **${name}** from ${store.rel("specs", name!, "spec.md")}. First, a check of the spec against the code.`, display: true }, { triggerTurn: false });
           // Not awaited: the build runs on in this session, driven by agent_settled, while the command returns.
           void c.sendMessage({ customType: "pb-instruction", content: seed, display: false }, { triggerTurn: true });
@@ -423,10 +486,132 @@ export default function pb(pi: ExtensionAPI) {
     },
   });
 
+  /* -------------------------------- review ------------------------------- */
+
+  pi.registerCommand(cmd("review"), {
+    description: "Independent review of a build against its spec, by a reviewer who never saw the build (findings land in this session)",
+    getArgumentCompletions: specCompletions,
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle()) return ctx.ui.notify("Pi is busy. Wait for the current turn to finish.", "warning");
+      const store = new Store(ctx.cwd);
+      let name = specOfSession(ctx).name;
+      if (!name) {
+        const done = store.specNames().filter((n) => ["built", "reviewed", "building", "paused"].includes(store.progress(n)?.phase ?? ""));
+        if (!done.length) return ctx.ui.notify(`Nothing built to review yet: /${cmd("build")} first.`, "warning");
+        name = done.length === 1 || !ctx.hasUI ? done[0] : await ctx.ui.select("Review which spec?", done);
+        if (!name) return;
+      }
+      const loaded = loadSpec(store, name);
+      const p = store.progress(name);
+      if (!loaded || !p) return ctx.ui.notify(`${store.rel("specs", name, "spec.md")} doesn't parse.`, "error");
+      const { cfg, testCmd, buildCmd } = commands(ctx.cwd, store);
+
+      const abort = new AbortController();
+      const unsubEsc = ctx.mode === "tui" ? ctx.ui.onTerminalInput((d) => (d === "\x1b" ? (abort.abort(), { consume: true }) : undefined)) : undefined;
+      let activity = "";
+      const render = (phase: string) => ctx.ui.setWidget("pb", [`pb review ${name} — ${phase}   (Esc to stop)`, ...(activity ? [`  ↳ ${activity}`] : [])]);
+      try {
+        // Fresh ground truth first: the reviewer should judge what's on disk now.
+        const command = loaded.spec.gate === "tests" ? testCmd : loaded.spec.gate === "build" ? buildCmd : null;
+        if (command) {
+          render(`checking: ${command}`);
+          p.lastVerify = await runVerify(command, ctx.cwd, cfg.verifyTimeoutSec, cfg.testOutputCap, abort.signal);
+          store.saveProgress(p);
+        }
+        render("fresh reviewer");
+        const res = await runFresh({
+          cwd: ctx.cwd,
+          role: "reviewer",
+          systemPrompt: REVIEWER_SYSTEM,
+          brief: reviewerBrief({
+            name,
+            markdown: loaded.md,
+            spec: loaded.spec,
+            base: p.baseCommit,
+            changed: changedSince(ctx.cwd, p.baseCommit),
+            stat: diffStat(ctx.cwd, p.baseCommit),
+            check: p.lastVerify?.summary ?? "(not run)",
+            focus: args.trim(),
+          }),
+          prompt: "Review the change described in the attached file. End with the VERDICT line.",
+          tools: ["read", "grep", "find", "ls", "bash"],
+          model: cfg.reviewer.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined),
+          thinking: cfg.reviewer.thinking ?? (ctx.thinkingLevel as string | undefined),
+          childExtensions: false,
+          signal: abort.signal,
+          onActivity: (a) => {
+            activity = a;
+            render("fresh reviewer");
+          },
+        });
+        if (res.aborted) return ctx.ui.notify("Review stopped.", "info");
+        if (!res.text.trim()) return ctx.ui.notify(`The reviewer produced no output${res.error ? `: ${res.error.slice(0, 300)}` : ""}`, "error");
+        const verdict = [...res.text.matchAll(/^\s*VERDICT:\s*(pass|changes_needed)\b/gim)].at(-1)?.[1].toLowerCase();
+        const prose = res.text.replace(/^\s*VERDICT:.*$/gim, "").trim();
+        store.event(name, { type: "review", verdict: verdict ?? "none", input: res.tokens.input, output: res.tokens.output, cacheRead: res.tokens.cacheRead, cacheWrite: res.tokens.cacheWrite, cost: res.cost, ms: res.ms });
+        if (verdict === "pass") {
+          p.phase = "reviewed";
+          store.saveProgress(p);
+        }
+        post(
+          [
+            `**Review of ${name}** — ${verdict === "pass" ? "✅ PASS" : verdict === "changes_needed" ? "✗ CHANGES NEEDED" : "no verdict"}`,
+            "",
+            prose,
+            "",
+            tip(verdict === "pass" ? "review.pass" : verdict === "changes_needed" ? "review.changes" : "review.other", { spec: name }),
+          ].join("\n"),
+        );
+      } finally {
+        unsubEsc?.();
+        ctx.ui.setWidget("pb", undefined);
+      }
+    },
+  });
+
+  /* -------------------------------- stats -------------------------------- */
+
+  pi.registerCommand(cmd("stats"), {
+    description: "How a build went: tasks, first-try rate, checks, pauses, tokens and cache. A spec name, or all",
+    getArgumentCompletions: specCompletions,
+    handler: async (args, ctx) => {
+      const store = new Store(ctx.cwd);
+      const arg = args.trim();
+      const all = loadStats(store);
+      if (arg === "all") return post(renderAll(all));
+      const name = arg || specOfSession(ctx).name || (all.length === 1 ? all[0].name : undefined);
+      const one = all.find((s) => s.name === name);
+      if (!one) return all.length ? post(renderAll(all)) : ctx.ui.notify("No stats yet: they are collected while building.", "info");
+      post(renderCard(one));
+    },
+  });
+
+  /* ------------------------------- archive ------------------------------- */
+
+  pi.registerCommand(cmd("archive"), {
+    description: "Put a finished spec (and its history) away in .pi/pb-archive/",
+    getArgumentCompletions: specCompletions,
+    handler: async (args, ctx) => {
+      const store = new Store(ctx.cwd);
+      const candidates = store.specNames().filter((n) => ["built", "reviewed"].includes(store.progress(n)?.phase ?? ""));
+      let name = args.trim() || undefined;
+      if (!name) {
+        if (!candidates.length) return ctx.ui.notify("No finished spec to archive.", "info");
+        name = candidates.length === 1 || !ctx.hasUI ? candidates[0] : await ctx.ui.select("Archive which spec?", candidates);
+        if (!name) return;
+      }
+      if (!store.readSpec(name)) return ctx.ui.notify(`No spec "${name}".`, "warning");
+      if (!candidates.includes(name) && ctx.hasUI && !(await ctx.ui.confirm(`${name} isn't finished`, "Archive it anyway?"))) return;
+      const dest = store.archive(name);
+      if (!store.specNames().length) dropCheckpoints(ctx.cwd); // no live spec left to undo: let git reclaim the snapshots
+      ctx.ui.notify(`Archived ${name} to ${path.relative(ctx.cwd, dest)}.`, "info");
+    },
+  });
+
   /* --------------------------------- undo -------------------------------- */
 
   pi.registerCommand(cmd("undo"), {
-    description: "Restore the working tree and task list to before a task of this build, picked from a list",
+    description: "Go back to before a task of this build: files and task list, picked from a list",
     handler: async (args, ctx) => {
       if (!ctx.isIdle()) return ctx.ui.notify("Pi is busy. Wait for the current turn to finish.", "warning");
       const { store, name, progress: p } = specOfSession(ctx);

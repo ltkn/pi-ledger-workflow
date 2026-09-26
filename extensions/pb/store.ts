@@ -175,6 +175,17 @@ export class Store {
     fs.appendFileSync(path.join(this.specDir(name), "events.jsonl"), `${JSON.stringify({ at: now(), ...e })}\n`);
   }
 
+  /** Planning sessions: their project files are read-only (see the tool_call guard). */
+  planningSessions(): string[] {
+    return readJson<string[]>(path.join(this.root, "planning.json")) ?? [];
+  }
+  setPlanning(sessionFile: string, on: boolean): void {
+    const list = new Set(this.planningSessions());
+    if (on) list.add(sessionFile);
+    else list.delete(sessionFile);
+    writeFile(path.join(this.root, "planning.json"), `${JSON.stringify([...list], null, 2)}\n`);
+  }
+
   /** The spec whose build runs in this session file, if any. */
   specForSession(sessionFile: string | undefined): string | undefined {
     if (!sessionFile) return undefined;

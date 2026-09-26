@@ -45,7 +45,7 @@ export interface RunResult {
 
 function piInvocation(args: string[]): { command: string; args: string[] } {
   // Override for custom installs and for the test suite's mock.
-  const override = process.env.PI_WF_PI_COMMAND;
+  const override = process.env.PI_PB_PI_COMMAND;
   if (override) return { command: override, args };
   // Same resolution strategy as Pi's own subagent example.
   const script = process.argv[1];

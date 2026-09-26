@@ -1,6 +1,6 @@
 {
-  "name": "pi-ledger-workflow",
-  "version": "0.2.0",
+  "name": "pi-plan-build",
+  "version": "1.0.0",
   "description": "Plan \u2192 spec \u2192 build \u2192 review for the Pi coding agent: plan together, build each feature in a fresh session from a self-contained spec, task by task behind checks the harness runs, then an independent review.",
   "type": "module",
   "license": "MIT",
@@ -9,15 +9,16 @@
     "pi",
     "pi-extension",
     "coding-agent",
-    "orchestration",
-    "multi-agent",
-    "ledger"
+    "spec",
+    "plan",
+    "review",
+    "workflow"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ltkn/pi-ledger-workflow.git"
+    "url": "git+https://github.com/ltkn/pi-plan-build.git"
   },
-  "homepage": "https://github.com/ltkn/pi-ledger-workflow#readme",
+  "homepage": "https://github.com/ltkn/pi-plan-build#readme",
   "files": [
     "extensions",
     "README.md",

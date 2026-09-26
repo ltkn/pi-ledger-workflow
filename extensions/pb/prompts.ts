@@ -2,6 +2,7 @@
  * What the agent is told in each phase. Planning and building happen in your Pi
  * sessions; only the review is a separate, fresh call.
  */
+import { tip } from "./help.ts";
 import { type ParsedSpec, REQUIRED_SECTIONS, type SpecTask } from "./spec.ts";
 import { PB_DIR } from "./store.ts";
 
@@ -18,7 +19,7 @@ export const COMMENT_RULES = `Comments (any language: Javadoc, TSDoc/JSDoc, docs
 export function planPrompt(feature: string, testCmd: string | null): string {
   return `[pb:plan] ${feature}
 
-We are PLANNING this feature together. Editing and writing files is switched off in this phase: investigate with read-only tools, think, and discuss with me. No code changes.
+We are PLANNING this together. Investigate freely: read and search the code, run the build and the tests, curl an API, write and run one-off scripts or programs (Python, Java, anything) to check an assumption. But don't change the project's files yet: editing or writing inside the project is blocked until /pb:build, so put scratch files in a temporary directory outside it (e.g. mktemp -d), and don't modify the project through bash either. Think, then discuss with me.
 
 1. Investigate the codebase: the files, classes and modules involved and the role each plays; the closest existing feature and how it is built; the conventions to follow; the test setup and the exact command to run one test class.
 2. ${testCmd ? `Test baseline: run \`${testCmd}\` once (or the affected module's tests if it is very slow) and tell me whether it passes, how long it takes, and any failures that exist before this feature.` : "No test command is configured or detected: find the command that runs this project's tests, run it once, and tell me whether it passes."}
@@ -26,7 +27,9 @@ We are PLANNING this feature together. Editing and writing files is switched off
 
 When the discussion covers more than one shippable outcome, say so: each becomes its own spec.
 
-We'll iterate. When I'm ready I'll run /pb:spec and you'll write the spec.`;
+We'll iterate. When I'm ready I'll run /pb:spec and you'll write the spec. End your first reply with this block, verbatim:
+
+${tip("plan.next")}`;
 }
 
 /* ================================== spec ================================== */
@@ -67,7 +70,9 @@ Rules:
 - Name: short kebab-case (e.g. "order-cancellation").${existing.length ? ` Existing specs: ${existing.join(", ")}. Reusing a name rewrites that spec.` : ""}
 - Sections required: ${REQUIRED_SECTIONS.map((s) => `"## ${s}"`).join(", ")}. The tool rejects a spec that doesn't parse; fix it and call again.
 
-Then tell me where each spec is, and anything still open.`;
+Then tell me where each spec is, and anything still open. End your reply with this block, verbatim:
+
+${tip("spec.next")}`;
 }
 
 /* ================================== build ================================== */
@@ -124,4 +129,48 @@ export function fixPrompt(taskId: string, what: string, output: string, attempt:
 ${output}
 
 Fix the root cause (not the symptom), then call pb_task_done again with task "${taskId}".`;
+}
+
+/* ================================== review ================================== */
+
+export const REVIEWER_SYSTEM = `You are an independent REVIEWER in a fresh context. You did not take part in planning or building, and you are deliberately not shown the build conversation: judge the actual code against the spec.
+
+Do not modify any file. Use read/grep/find/ls and bash only for inspection (git diff, git status, running a test is fine). Never run git commands that change the working tree or index (checkout, restore, reset, stash, clean, add, commit): the change under review may be uncommitted. Ignore ${P}/ except the spec you are given.
+
+The harness already ran this feature's check on the current tree; the result is in the brief. Don't re-run the full suite; run a specific test only when you need evidence. Read the diff file by file.
+
+Check:
+- The spec's acceptance criteria, one by one: met or not met, with evidence (file:line or test name). Each task's acceptance too.
+- The spec's decisions respected, including the rejected alternatives ("Not doing X"): flag anything the build brought back.
+- Missing cases, error handling, convention breaks, changes outside the spec's scope, debug output, commented-out code or leftover TODOs.
+- Tests, according to the spec's "New tests" line: when it is yes, tests that don't really test the behaviour, and missing tests for new behaviour; either way, existing tests that were deleted, skipped, disabled or weakened.
+- Comments that restate the code, narrate history ("changed from", "now uses", task ids), mislead, or were left wrong by the change. The rule the build followed: ${COMMENT_RULES}
+- The quality bar: ${QUALITY_BAR} Flag quick fixes and workarounds (${QUICK_FIXES}), outdated or deprecated APIs, and security problems (injection, secrets in code, missing validation or authorisation, unsafe defaults).
+
+"changes_needed" is only for what should block a merge: an unmet acceptance criterion or decision, a bug, missing tests for new behaviour (unless the spec says no new tests), a weakened test, a risky change outside scope, a quick fix or workaround where a proper solution belongs, a security problem. Nits and pre-existing issues are findings, not blockers; if those are all you found, the verdict is "pass".
+
+Write the review in markdown: verdict first, then the acceptance checklist, then findings numbered and ordered by severity, each with file:line and a concrete fix. Be brief on what is fine. End with exactly one line, the last of your reply: VERDICT: pass   or   VERDICT: changes_needed`;
+
+export function reviewerBrief(o: { name: string; markdown: string; spec: ParsedSpec; base?: string; changed: string[]; stat: string; check: string; focus: string }): string {
+  const lines = [
+    `# Review: ${o.name}${o.focus ? ` — focus: ${o.focus}` : ""}`,
+    "",
+    "## How to see the change",
+    "",
+    o.base ? `Base commit: ${o.base}\nRun: git diff ${o.base} -- . ':(exclude).pi'   and read the untracked files listed below.` : "No base commit recorded: use git diff HEAD and git status.",
+    "",
+    "## Changed files",
+    "",
+    o.changed.join("\n") || "(none)",
+    o.stat ? `\n${o.stat}` : "",
+    "",
+    "## The check the harness ran",
+    "",
+    o.spec.gate === "none" ? `None: verification is "none" for this feature (${o.spec.gateReason}). Look harder at correctness yourself.` : o.check,
+    "",
+    `## The spec (${P}/specs/${o.name}/spec.md)`,
+    "",
+    o.markdown,
+  ];
+  return lines.join("\n");
 }
