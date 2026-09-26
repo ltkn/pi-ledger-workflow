@@ -1,18 +1,18 @@
 /**
  * Checkpoints: shadow snapshots of the working tree around every build round.
- * They live in git's object store (a private index plus refs/wf/checkpoints), so
+ * They live in git's object store (a private index plus refs/pb/checkpoints), so
  * HEAD, your index, your branch and your files are never touched by taking one.
  * Used for the manager's real per-round diff, lost-work and test-tampering
- * detection, and /wf:undo.
+ * detection, and /pb:undo.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-const REF = "refs/wf/checkpoints";
-const LEDGER_EXCLUDE = ":(exclude).pi/wf";
+const REF = "refs/pb/checkpoints";
+const LEDGER_EXCLUDE = ":(exclude).pi/pb";
 const MAX_UNTRACKED_BYTES = 20 * 1024 * 1024;
-const IDENT = { GIT_AUTHOR_NAME: "wf", GIT_AUTHOR_EMAIL: "wf@localhost", GIT_COMMITTER_NAME: "wf", GIT_COMMITTER_EMAIL: "wf@localhost" };
+const IDENT = { GIT_AUTHOR_NAME: "pb", GIT_AUTHOR_EMAIL: "pb@localhost", GIT_COMMITTER_NAME: "pb", GIT_COMMITTER_EMAIL: "pb@localhost" };
 
 export interface Snapshot {
   commit: string;
@@ -48,7 +48,7 @@ const split0 = (s: string | undefined) => (s ?? "").split("\0").filter(Boolean);
 export function snapshot(cwd: string, message: string): Snapshot | undefined {
   if (tryRun(cwd, ["rev-parse", "--is-inside-work-tree"])?.trim() !== "true") return;
   try {
-    const env = { GIT_INDEX_FILE: gitPath(cwd, "wf-index") };
+    const env = { GIT_INDEX_FILE: gitPath(cwd, "pb-index") };
     if (!fs.existsSync(env.GIT_INDEX_FILE)) tryRun(cwd, ["read-tree", "HEAD"], env); // seed for speed; fails harmlessly without commits
     const huge = split0(tryRun(cwd, ["ls-files", "-z", "--others", "--exclude-standard", "--", ".", LEDGER_EXCLUDE], env)).filter((f) => {
       try {
@@ -121,7 +121,7 @@ export function restore(cwd: string, from: string, to: string, paths: string[] =
   for (let i = 0; i + 1 < entries.length; i += 2) (entries[i] === "D" ? remove : write).push(entries[i + 1]);
   for (const f of remove) fs.rmSync(path.join(cwd, f), { force: true });
   if (write.length) {
-    const env = { GIT_INDEX_FILE: gitPath(cwd, "wf-restore-index") };
+    const env = { GIT_INDEX_FILE: gitPath(cwd, "pb-restore-index") };
     try {
       run(cwd, ["read-tree", to], env);
       run(cwd, ["checkout-index", "-f", "-z", "--stdin"], env, write.join("\0"));

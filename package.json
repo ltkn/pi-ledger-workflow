@@ -1,7 +1,7 @@
 {
   "name": "pi-ledger-workflow",
   "version": "0.2.0",
-  "description": "Scope → plan → build → review for the Pi coding agent: fresh-context manager/worker loop coordinated through an on-disk ledger, verified by your test suite. Adapted from GVS5H (arXiv:2608.26480).",
+  "description": "Plan \u2192 spec \u2192 build \u2192 review for the Pi coding agent: plan together, build each feature in a fresh session from a self-contained spec, task by task behind checks the harness runs, then an independent review.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -26,15 +26,16 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions/wf/index.ts"
+      "./extensions/pb/index.ts"
     ]
   },
   "scripts": {
     "typecheck": "tsc -p .",
-    "test": "tsx --test test/e2e.test.mts",
+    "test": "tsx --test test/pb.test.mts",
     "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {

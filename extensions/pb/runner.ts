@@ -64,7 +64,7 @@ function preview(args: Record<string, unknown>): string {
 }
 
 export async function runFresh(o: RunOptions): Promise<RunResult> {
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), `pi-wf-${o.role}-`));
+  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), `pi-pb-${o.role}-`));
   const sysFile = path.join(tmp, "system.md");
   const briefFile = path.join(tmp, "brief.md");
   await fs.promises.writeFile(sysFile, o.systemPrompt, { mode: 0o600 });
@@ -214,7 +214,7 @@ export function extractJson<T>(text: string, tag: string): T | undefined {
   return undefined;
 }
 
-/** Content of the last ```<tag> fenced block (free text, e.g. wf-notes), or undefined. */
+/** Content of the last ```<tag> fenced block (free text), or undefined. */
 export function extractBlock(text: string, tag: string): string | undefined {
   const all = [...text.matchAll(new RegExp("```" + tag + "[^\\S\\n]*\\n([\\s\\S]*?)```", "g"))];
   const last = all.at(-1)?.[1].trim();

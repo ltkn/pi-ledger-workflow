@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type VerifyResult, cap, now } from "./ledger.ts";
+import { type VerifyResult, cap, now } from "./store.ts";
 
 export function detectVerify(cwd: string): string | null {
   const has = (f: string) => fs.existsSync(path.join(cwd, f));
@@ -27,9 +27,27 @@ export function detectVerify(cwd: string): string | null {
   return null;
 }
 
+/** Compile/typecheck only, for the "build" gate (tests compile but don't run). */
+export function detectBuild(cwd: string): string | null {
+  const has = (f: string) => fs.existsSync(path.join(cwd, f));
+  const win = process.platform === "win32";
+  if (has("pom.xml")) return `${has(win ? "mvnw.cmd" : "mvnw") ? (win ? "mvnw.cmd" : "./mvnw") : "mvn"} -B -q -DskipTests test-compile`;
+  if (has("build.gradle") || has("build.gradle.kts")) return `${has(win ? "gradlew.bat" : "gradlew") ? (win ? "gradlew.bat" : "./gradlew") : "gradle"} testClasses -q`;
+  if (has("tsconfig.json")) return "npx tsc --noEmit";
+  if (has("Cargo.toml")) return "cargo check -q --all-targets";
+  if (has("go.mod")) return "go build ./... && go vet ./...";
+  return null;
+}
+
 export function resolveVerify(setting: string | null, cwd: string): string | null {
   if (setting === null || setting === "" || setting === "none") return null;
   if (setting === "auto") return detectVerify(cwd);
+  return setting;
+}
+
+export function resolveBuild(setting: string | null, cwd: string): string | null {
+  if (setting === null || setting === "" || setting === "none") return null;
+  if (setting === "auto") return detectBuild(cwd);
   return setting;
 }
 

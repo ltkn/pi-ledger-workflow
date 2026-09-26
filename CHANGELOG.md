@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (1.0.0 in progress)
+
+- **Replaces wf with pb** (`/pb:plan`, `/pb:spec`, `/pb:build`, `/pb:undo`, `/pb:status`, `/pb:help`): plan together with editing off; write a self-contained spec per feature (`pb_write_spec`); build it in a fresh session seeded only with the spec, where the agent first checks the spec against the code (`pb_spec_gaps`), then the harness hands out the tasks one by one and gates each on its check (tests, build, or none), sending failures back and pausing after `maxAttempts`; decisions made during the build go into the spec (`pb_record_decision`); tasks end with `pb_task_done`. Per-task snapshots for `/pb:undo`, and the changed-test check. The manager, fresh workers, tester, merge and escalation are gone. Review, stats and the full guide follow
+
 ## Unreleased
 
 - Optional (`"mergeSpecTests": true`, off by default): spec tests merged at the end of the build: the tester records which existing test file each Spec file extends, and once every task is done, a last task (M1) moves those tests into it (following its grouping convention) and deletes the Spec file. The harness checks that no test case was lost before M1 counts as done; review sees the merged result

@@ -1,12 +1,12 @@
 /**
- * Situational help. workflow-help.md is the single source: tagged regions
- * (`<!-- wf:tip key -->` … `<!-- /wf -->`, same for `wf:topic`) are shown after
- * phase results and by /wf:help, so the doc and the in-session text can't drift.
+ * Situational help. guide.md is the single source: tagged regions
+ * (`<!-- pb:tip key -->` … `<!-- /pb -->`, same for `pb:topic`) are shown after
+ * phase results and by /pb:help, so the doc and the in-session text can't drift.
  */
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export const HELP_PATH = fileURLToPath(new URL("./workflow-help.md", import.meta.url));
+export const HELP_PATH = fileURLToPath(new URL("./guide.md", import.meta.url));
 
 interface Regions {
   tip: Map<string, string>;
@@ -24,7 +24,7 @@ function regions(): Regions {
   } catch {
     return cache; // help is best-effort; never break a phase over it
   }
-  for (const m of md.matchAll(/<!-- wf:(tip|topic) ([\w.-]+) -->\n([\s\S]*?)<!-- \/wf -->/g)) {
+  for (const m of md.matchAll(/<!-- pb:(tip|topic) ([\w.-]+) -->\n([\s\S]*?)<!-- \/pb -->/g)) {
     cache[m[1] as keyof Regions].set(m[2], m[3].trim());
   }
   return cache;
