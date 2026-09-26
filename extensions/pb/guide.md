@@ -48,6 +48,12 @@ Discuss as long as you like. When a discussion turns out to cover two things you
 would merge separately, Pi should say so; they become two specs.
 
 `/pb:plan off` lifts the block for this session without building anything.
+
+**Finding your sessions again.** `/pb:plan` names the session "plan: <what you
+asked>", and `/pb:build` names its new session "build: <spec>". Both show up by
+name in Pi's `/resume` picker, and the first message of each shows its id:
+`pi --session <id>` reopens it directly, e.g. after a crash. `/pb:status` lists
+where each build session is.
 <!-- /pb -->
 
 <!-- pb:topic spec -->

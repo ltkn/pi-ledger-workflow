@@ -10,6 +10,7 @@ pb replaces wf: a simpler flow built around a self-contained spec, a fresh build
 - `/pb:review [focus]`: a fresh check, then one fresh reviewer with the spec, the diff and the check result, but not the build conversation; findings land in the session, verdict pass/changes needed
 - `/pb:undo`: per-task snapshots in git's object store (never touching your branch or index), reversible; deleting, cutting or skipping existing tests fails a task's check
 - An unfinished build whose session is gone (e.g. after a crash) can be restarted from any session with `/pb:build`; finished tasks stay done
+- Planning and build sessions are named ("plan: …", "build: <spec>") so `/resume` finds them, and their first message shows `pi --session <id>`; `/pb:status` shows each build's session
 - Spec names complete as you type after `/pb:build`, `/pb:review`, `/pb:stats` and `/pb:archive`
 - `/pb:status`, `/pb:stats [all]` (first-try rate, checks, pauses, review, the build session's tokens, cache share, peak context, cost, time), `/pb:archive` (to the git-ignored `.pi/pb-archive/`), `/pb:help [topic]` and a What-now block after every step
 - The quality bar (best practice, clean, secure, current APIs, no quick fixes) and the comment rules carry over into planning, building and review

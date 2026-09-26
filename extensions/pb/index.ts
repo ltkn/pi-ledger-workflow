@@ -169,8 +169,14 @@ export default function pb(pi: ExtensionAPI) {
       if (!arg)
         return ctx.ui.notify(`Describe what you want, in your own words, e.g.\n/${cmd("plan")} let admins cancel an order while it is still pending, and notify the customer`, "warning");
       if (session) store.setPlanning(session, true);
+      // A name makes the planning session easy to find again in /resume, e.g. after a crash.
+      const title = arg.length > 60 ? `${arg.slice(0, 57)}…` : arg;
+      pi.setSessionName(`plan: ${title}`);
       const { testCmd } = commands(ctx.cwd, store);
-      instruct(`▶ /${cmd("plan")} — ${arg} (the project's files stay untouched)`, planPrompt(arg, testCmd));
+      instruct(
+        `▶ /${cmd("plan")} — ${arg} (the project's files stay untouched)\nThis session: "plan: ${title}" · back to it any time with /resume, or \`pi --session ${ctx.sessionManager.getSessionId()}\``,
+        planPrompt(arg, testCmd),
+      );
     },
   });
 
@@ -471,13 +477,23 @@ export default function pb(pi: ExtensionAPI) {
       const parent = ctx.sessionManager.getSessionFile();
       const result = await ctx.newSession({
         parentSession: parent,
+        setup: async (sm) => {
+          sm.appendSessionInfo(`build: ${name}`);
+        },
         withSession: async (c) => {
           p.session = c.sessionManager.getSessionFile();
           store.saveProgress(p);
           store.event(name!, { type: "build-start", tasks: spec.tasks.length, gate: spec.gate });
           // Only `c` from here on: the captured pi and ctx belong to the replaced session.
           // The new session gets a fresh runtime with the default tools, so editing is on.
-          await c.sendMessage({ customType: "pb", content: `▶ Building **${name}** from ${store.rel("specs", name!, "spec.md")}. First, a check of the spec against the code.`, display: true }, { triggerTurn: false });
+          await c.sendMessage(
+            {
+              customType: "pb",
+              content: `▶ Building **${name}** from ${store.rel("specs", name!, "spec.md")}. First, a check of the spec against the code.\nThis session: "build: ${name}" · back to it with /resume, or \`pi --session ${c.sessionManager.getSessionId()}\``,
+              display: true,
+            },
+            { triggerTurn: false },
+          );
           // Not awaited: the build runs on in this session, driven by agent_settled, while the command returns.
           void c.sendMessage({ customType: "pb-instruction", content: seed, display: false }, { triggerTurn: true });
         },
@@ -669,7 +685,8 @@ export default function pb(pi: ExtensionAPI) {
       const lines = names.flatMap((n) => {
         const p = store.progress(n);
         const s = loadSpec(store, n)?.spec;
-        const head = `${n === here ? "▸ " : ""}${n} — ${p?.phase ?? "written"}${s ? ` · verification ${s.gate}${s.newTests ? "" : " · no new tests"}${s.dependsOn ? ` · depends on ${s.dependsOn}` : ""}` : " · ⚠ doesn't parse"}${p?.pause ? ` · paused: ${p.pause}` : ""}`;
+        const where = p?.session && n !== here ? ` · session: pi --session ${p.session}` : "";
+        const head = `${n === here ? "▸ " : ""}${n} — ${p?.phase ?? "written"}${where}${s ? ` · verification ${s.gate}${s.newTests ? "" : " · no new tests"}${s.dependsOn ? ` · depends on ${s.dependsOn}` : ""}` : " · ⚠ doesn't parse"}${p?.pause ? ` · paused: ${p.pause}` : ""}`;
         return [head, ...(p && p.phase !== "written" ? p.tasks.map((t) => `    ${taskLine(t)}`) : [])];
       });
       ctx.ui.notify([...lines, `help: /${cmd("help")}`].join("\n"), "info");

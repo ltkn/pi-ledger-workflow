@@ -30,6 +30,7 @@ function setup(config: object = {}) {
   const selects: string[] = [];
   const blocked: string[] = [];
   const agent: { script?: Script } = {};
+  const names = new Map<string, string>();
   let sessions = 0;
 
   // Like Pi: every session gets its own runtime and extension instance; after a session
@@ -55,6 +56,7 @@ function setup(config: object = {}) {
       registerTool: (t: { name: string }) => (self.tools[t.name] = t),
       on: (e: string, h: (e: object, ctx: object) => unknown) => (self.handlers[e] ??= []).push(h),
       getActiveTools: () => ["read", "bash", "edit", "write"],
+      setSessionName: (n: string) => names.set(sessionFile, n),
       setActiveTools: () => {},
       sendMessage: (m: { content: string; display?: boolean }, o?: { triggerTurn?: boolean }) => {
         if (m.display) posts.push(m.content);
@@ -69,7 +71,7 @@ function setup(config: object = {}) {
       model: { provider: "p", id: "m", contextWindow: 100000 },
       thinkingLevel: "low",
       isIdle: () => true,
-      sessionManager: { getSessionFile: () => sessionFile },
+      sessionManager: { getSessionFile: () => sessionFile, getSessionId: () => path.basename(sessionFile, ".jsonl") },
       ui: {
         notify: (m: string) => notes.push(m),
         setWidget: () => {},
@@ -78,9 +80,11 @@ function setup(config: object = {}) {
         confirm: async () => true,
         input: async () => "",
       },
-      newSession: async (opts: { withSession?: (c: object) => Promise<void> }) => {
+      newSession: async (opts: { setup?: (sm: object) => Promise<void>; withSession?: (c: object) => Promise<void> }) => {
         self.stale = true;
-        rt = makeRuntime(path.join(repo, `build-session-${++sessions}.jsonl`));
+        const file = path.join(repo, `build-session-${++sessions}.jsonl`);
+        await opts.setup?.({ appendSessionInfo: (n: string) => names.set(file, n) });
+        rt = makeRuntime(file);
         const fresh = rt;
         await opts.withSession?.({ ...fresh.ctx, sessionManager: fresh.ctx.sessionManager, sendMessage: async (m: any, o: any) => fresh.pi.sendMessage(m, o) });
         return { cancelled: false };
@@ -129,7 +133,7 @@ function setup(config: object = {}) {
   };
   const read = (f: string) => fs.readFileSync(path.join(repo, f), "utf8");
   const progress = (name: string) => JSON.parse(read(`.pi/pb/specs/${name}/progress.json`));
-  return { repo, posts, notes, instructions, selects, blocked, agent, run, read, progress, callTool, settle, runtime: () => rt };
+  return { repo, names, posts, notes, instructions, selects, blocked, agent, run, read, progress, callTool, settle, runtime: () => rt };
 }
 
 const SPEC = (opts: { verification?: string; newTests?: string; tasks?: string } = {}) => `# Order cancellation
@@ -205,6 +209,8 @@ test("plan: investigation is free, project files are protected until /pb:plan of
   const t = setup({ verify: "true" });
   process.chdir(t.repo);
   await t.run("plan", "let admins cancel pending orders");
+  assert.equal(t.names.get(path.join(t.repo, "planning-session.jsonl")), "plan: let admins cancel pending orders");
+  assert.match(t.posts.at(-1)!, /back to it any time with \/resume, or `pi --session planning-session`/);
   assert.match(t.instructions.at(-1)!, /\[pb:plan\] let admins cancel pending orders[\s\S]*curl an API, write and run one-off scripts[\s\S]*run `true` once/);
   const scratch = path.join(os.tmpdir(), "pb-scratch.py");
   assert.equal((await t.callTool("write", { path: scratch, content: "print(1)" })).error, undefined); // outside the project: fine
@@ -250,6 +256,8 @@ test("build: fresh session, gap check, tasks behind their tests, then the full s
   const p = t.progress("order-cancellation");
   assert.equal(p.phase, "built");
   assert.match(p.session, /build-session-1\.jsonl$/);
+  assert.equal(t.names.get(p.session), "build: order-cancellation");
+  assert.ok(t.posts.some((x) => /This session: "build: order-cancellation" · back to it with \/resume, or `pi --session build-session-1`/.test(x)));
   assert.deepEqual(p.tasks.map((x: any) => [x.id, x.status]), [["T1", "done"], ["T2", "done"]]);
   assert.match(t.instructions[0], /fresh session, from the spec below and nothing else[\s\S]*call pb_spec_gaps[\s\S]*# Order cancellation/);
   assert.match(t.posts.at(-1)!, /BUILD COMPLETE — order-cancellation[\s\S]*PASS/);
