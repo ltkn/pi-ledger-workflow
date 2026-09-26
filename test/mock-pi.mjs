@@ -37,6 +37,12 @@ if (message.startsWith("You stopped before")) {
     const delta = [{ id: "T3", detail: "patched by manager" }];
     say("ok\n```wf-manage\n" + JSON.stringify({ tasks: delta, next: next?.id ?? null, instruction: "do it", done: !next, needs_input: q, rationale: "r" }) + "\n```");
   }
+} else if (sys.includes("TESTER") && scenario === "specmerge") {
+  // T1's spec test adds to the existing tests/test_a.py.
+  fs.mkdirSync(".pi/wf/spec/T1/tests", { recursive: true });
+  fs.writeFileSync(".pi/wf/spec/T1/tests/test_a_new_spec.py", "def test_new():\n    assert True\n");
+  const tasks = [{ id: "T1", files: [{ path: "tests/test_a_new_spec.py", extends: "tests/test_a.py" }], tests: ["test_new: checks it"], skip: null }];
+  say("```wf-tests\n" + JSON.stringify({ tasks, assumptions: [], spec_gaps: [] }) + "\n```");
 } else if (sys.includes("TESTER")) {
   // T1 gets a parked test; T2 is skipped; T3's file collides with an existing one; one stray write outside the spec dir.
   const ids = [...brief.split("## Write tests for")[1].split("\n## ")[0].matchAll(/^### (\w+):/gm)].map((m) => m[1]);
@@ -51,7 +57,16 @@ if (message.startsWith("You stopped before")) {
   say("```wf-tests\n" + JSON.stringify({ tasks, assumptions: [], spec_gaps: ["Is cancelling twice an error?"] }) + "\n```");
 } else if (sys.includes("WORKER")) {
   const done = (id) => say("```wf-report\n" + JSON.stringify({ status: "done", summary: `did ${id}` }) + "\n```");
-  if (scenario === "spec") {
+  if (scenario === "specmerge") {
+    const id = brief.match(/task (\w+):/)[1];
+    if (id.startsWith("M")) {
+      // Merge: move the spec test into its target (or, badly, just delete the spec file).
+      const spec = "tests/test_a_new_spec.py";
+      if (!process.env.MOCK_BAD_MERGE) fs.appendFileSync("tests/test_a.py", fs.readFileSync(spec, "utf8"));
+      fs.rmSync(spec, { force: true });
+    } else fs.writeFileSync(`${id}.txt`, "x");
+    done(id);
+  } else if (scenario === "spec") {
     // T1's worker tries to edit its spec test: the harness must restore it.
     const id = brief.match(/task (\w+):/)[1];
     if (id === "T1" && fs.existsSync("tests/t1_spec_test.py")) fs.appendFileSync("tests/t1_spec_test.py", "# weakened\n");

@@ -23,7 +23,7 @@ export interface Task {
   acceptance?: string;
   status: TaskStatus;
   attempts?: number;
-  source?: "plan" | "manager" | "verify" | "review";
+  source?: "plan" | "manager" | "verify" | "review" | "merge";
 }
 
 export interface VerifyResult {
@@ -181,6 +181,8 @@ export interface Config {
   checkpoints: boolean;
   /** Acceptance tests written from the spec before the build (/wf:tests); only when a verify command exists. */
   specTests: boolean;
+  /** At the end of a build, merge Spec files into the existing test files they extend (a last task, M1). Off by default. */
+  mergeSpecTests: boolean;
   /** Give a task's next attempts to a stronger model once it has failed `afterAttempts` times (set by /wf:models mixed). */
   escalate: { afterAttempts: number; model: string } | null;
 }
@@ -198,6 +200,7 @@ export const DEFAULT_CONFIG: Config = {
   workerTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
   checkpoints: true,
   specTests: true,
+  mergeSpecTests: false,
   escalate: null,
 };
 

@@ -156,6 +156,7 @@ its task), and lets `/wf:undo` restore any earlier state. See
 | `thinking` | `{}` | per role; unset = your session's level |
 | `childExtensions` | false | load your other extensions in fresh workers |
 | `workerTools` | read,bash,edit,write,grep,find,ls | |
+| `mergeSpecTests` | false | at the end of a build, a last task merges each spec test file into the existing test file it extends (checked: no test case may be lost) |
 | `specTests` | true | acceptance tests from the spec before the build (`/wf:tests`); only when a verify command exists |
 | `checkpoints` | true | shadow snapshots around every round (git only): the manager gets the real diff, lost work and changed/skipped tests are flagged, `/wf:undo` works |
 

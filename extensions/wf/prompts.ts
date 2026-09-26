@@ -118,7 +118,7 @@ Do exactly ONE task: the one assigned in the brief. Follow the codebase's existi
 - Do not edit anything under ${L}/ — the harness owns the ledger. ${THIS_FEATURE}
 - Do not commit, push, or rewrite git history.
 - Never run git commands that discard or move changes (checkout or restore of files, reset, stash, clean): the working tree holds earlier tasks' uncommitted work. To undo your own change, edit it back.
-- Never delete, skip, disable or weaken a test to make verification pass. If you believe a test is wrong, leave it as it is, explain why in the summary, and report "blocked".
+- Never delete, skip, disable or weaken a test to make verification pass (moving tests between files, when your task says so, is not deleting them). If you believe a test is wrong, leave it as it is, explain why in the summary, and report "blocked".
 - If the brief lists spec tests for your task, they are its acceptance: make them pass. Don't edit them; the harness restores them before every test run anyway.
 - Work in small steps: first read the code you will change and the closest existing example of the pattern, then make the change, then run the targeted test (context.md says how). The harness runs the full verification after you (command in the brief); leave the project compiling and tests passing.
 - If a previous verification failed, fix it first unless the instruction says otherwise. If the failure looks unrelated to this feature, do not rewrite unrelated code: report "blocked" and explain.
@@ -303,11 +303,13 @@ Write nothing outside ${S}/. Do not modify any existing file. ${THIS_FEATURE}
 
 End with exactly one block of valid JSON:
 \`\`\`wf-tests
-{"tasks": [{"id": "T1", "tests": ["OrderCancelTest.cancelsPendingOrder: cancelling a PENDING order returns 200 and publishes OrderCancelled"], "skip": null},
-           {"id": "T2", "tests": [], "skip": "pure rename, nothing observable"}],
+{"tasks": [{"id": "T1", "files": [{"path": "src/test/java/com/acme/order/OrderCancelTest.java", "extends": null}], "tests": ["OrderCancelTest.cancelsPendingOrder: cancelling a PENDING order returns 200 and publishes OrderCancelled"], "skip": null},
+           {"id": "T2", "files": [{"path": "src/test/java/com/acme/order/OrderRenderCompactHeaderSpecTest.java", "extends": "src/test/java/com/acme/order/OrderRenderTest.java"}], "tests": ["OrderRenderCompactHeaderSpecTest.headerFitsOneLine: …"], "skip": null},
+           {"id": "T3", "files": [], "tests": [], "skip": "pure rename, nothing observable"}],
  "assumptions": [],
  "spec_gaps": []}
 \`\`\`
+- files: every file you wrote (its repository path), and "extends": the existing test file it adds to, or null when it tests something that has no test file yet. Files that extend one are merged into it at the end of the build.
 - tests: one line per test: its name and what it asserts.
 - skip: null, or why the task has no spec tests.
 - assumptions: names or behaviour you had to choose; [] if none.
@@ -349,6 +351,20 @@ export function testerBrief(
     section("All tasks (for context: order and what earlier tasks create)", tasks.map(taskLine).join("\n")),
     section("context.md", led.read("context.md", cfg.caps.context)),
   ].join("\n");
+}
+
+/** The harness-created last task of a build: fold the Spec files into the test classes they extend. */
+export function mergeTaskDetail(pairs: { spec: string; target: string }[]): { detail: string; acceptance: string } {
+  return {
+    detail: `The spec tests are done and pass. Merge each Spec file into the existing test file it extends, then delete the Spec file:
+${pairs.map((p) => `- ${p.spec} → ${p.target}`).join("\n")}
+
+- Move every test case; keep their names. On a name clash, name the moved test after the behaviour it checks.
+- Helpers: reuse the target's when they do the same job; move helpers only the Spec file had; rename a moved helper whose name clashes with a different one; no duplicates.
+- Structure: follow the target's convention. If it already groups its tests (e.g. JUnit @Nested classes, describe blocks, test classes), put the moved tests in a group named after the behaviour; otherwise add them as plain tests.
+- Deleting the Spec files listed above is expected; delete nothing else. No "merged from" comments.`,
+    acceptance: "Each listed Spec file is gone, every one of its test cases is in its target file, and the full test suite passes.",
+  };
 }
 
 /* ================================== review =================================== */

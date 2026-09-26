@@ -24,7 +24,32 @@ export interface SpecTask {
   /** hash of the task's title/detail/acceptance when the tests were written */
   hash: string;
   at: string;
+  /** spec file → the existing test file it adds to, as the tester reported it; merged into it at the end of the build */
+  extends?: Record<string, string>;
+  /** spec file → the test file it was merged into */
+  merged?: Record<string, string>;
 }
+
+export interface MergePair {
+  task: string;
+  spec: string;
+  target: string;
+}
+
+/** Spec files of finished tasks that add to an existing test file and haven't been merged into it yet. */
+export function pendingMerges(spec: Spec | undefined, tasks: Task[]): MergePair[] {
+  if (spec?.status !== "written") return [];
+  return tasks
+    .filter((t) => t.status === "done")
+    .flatMap((t) =>
+      Object.entries(spec.tasks[t.id]?.extends ?? {})
+        .filter(([f]) => !spec.tasks[t.id]?.merged?.[f])
+        .map(([f, target]) => ({ task: t.id, spec: f, target })),
+    );
+}
+
+/** Parked files still to keep in place in the repo (merged ones are gone for good). */
+export const liveFiles = (s: SpecTask) => s.files.filter((f) => !s.merged?.[f]);
 
 export interface Spec {
   /** "skipped": the human chose to build this feature without spec tests */
@@ -131,7 +156,10 @@ export function renderIndex(spec: Spec, tasks: Task[]): string {
     if (!s) lines.push("- (no spec tests yet)");
     else if (s.skip) lines.push(`- no spec tests: ${s.skip}`);
     else {
-      for (const f of s.files) lines.push(`- file: \`${f}\``);
+      for (const f of s.files)
+        lines.push(
+          `- file: \`${f}\`${s.merged?.[f] ? ` (merged into \`${s.merged[f]}\`)` : s.extends?.[f] ? ` (to be merged into \`${s.extends[f]}\` at the end of the build)` : ""}`,
+        );
       for (const x of s.tests) lines.push(`- ${x}`);
     }
     lines.push("");

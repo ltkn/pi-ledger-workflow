@@ -106,7 +106,7 @@ function blob(cwd: string, commit: string, p: string): string | undefined {
   return tryRun(cwd, ["rev-parse", "-q", "--verify", `${commit}:${p}`])?.trim() || undefined;
 }
 
-function content(cwd: string, commit: string, p: string): string | undefined {
+export function content(cwd: string, commit: string, p: string): string | undefined {
   return tryRun(cwd, ["show", `${commit}:${p}`]);
 }
 
@@ -140,10 +140,11 @@ const TEST_CASE =
   /@Test\b|@ParameterizedTest\b|@RepeatedTest\b|@TestFactory\b|^\s*(?:async\s+)?def\s+test_|^\s*(?:it|test)(?:\.each\([^)]*\))?\s*\(|#\[(?:tokio::)?test\]|^func\s+Test\w*\s*\(/gm;
 const SKIP = /@Disabled\b|@Ignore\b|\.skip\s*\(|\b(?:xit|xdescribe|xtest)\s*\(|pytest\.mark\.skip|@unittest\.skip|\bt\.Skip(?:Now)?\(|#\[ignore\]|\.todo\s*\(/g;
 
+export const countTestCases = (s: string) => (s.match(TEST_CASE) ?? []).length;
 const count = (s: string, re: RegExp) => (s.match(re) ?? []).length;
 
 export interface Flag {
-  kind: "lost-work" | "tampering";
+  kind: "lost-work" | "tampering" | "merge";
   detail: string;
   files: string[];
 }
@@ -154,7 +155,15 @@ export interface Flag {
  *   (the usual trace of a stray git checkout/stash/reset);
  * - tampering: existing test files deleted, fewer test cases, or new skip markers.
  */
-export function inspectRound(cwd: string, pre: Snapshot, post: Snapshot, start: Snapshot, otherTasksFiles: Set<string>): Flag[] {
+export function inspectRound(
+  cwd: string,
+  pre: Snapshot,
+  post: Snapshot,
+  start: Snapshot,
+  otherTasksFiles: Set<string>,
+  /** test files this round is expected to delete (Spec files being merged) */
+  allowedDeletions: Set<string> = new Set(),
+): Flag[] {
   const changed = changedPaths(cwd, pre.commit, post.commit);
   const flags: Flag[] = [];
 
@@ -167,7 +176,7 @@ export function inspectRound(cwd: string, pre: Snapshot, post: Snapshot, start: 
     if (before === undefined) continue; // a new test file is fine
     const after = content(cwd, post.commit, f);
     if (after === undefined) {
-      tampered.push(`${f} deleted`);
+      if (!allowedDeletions.has(f)) tampered.push(`${f} deleted`);
       continue;
     }
     const [c0, c1] = [count(before, TEST_CASE), count(after, TEST_CASE)];

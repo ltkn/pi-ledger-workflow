@@ -407,3 +407,49 @@ test("spec tests: the project's test folders are detected, and tests outside the
   const brief = testerBrief({ read: () => "" } as any, DEFAULT_CONFIG, [], [], "", {}, roots);
   assert.match(brief, /## Where this project keeps its tests\n\n- src\/test\/java\//);
 });
+
+function specMergeSetup(config: object) {
+  const t = setup("specmerge", { verify: "true", ...config }, [{ id: "T1", title: "a" }, { id: "T2", title: "b" }, { id: "T3", title: "c" }]);
+  fs.mkdirSync(path.join(t.repo, "tests"));
+  fs.writeFileSync(path.join(t.repo, "tests/test_a.py"), "def test_one():\n    pass\ndef test_two():\n    pass\n");
+  execSync("git add . && git commit -qm tests", { cwd: t.repo });
+  return t;
+}
+
+test("spec merge: a last task folds Spec files into the test file they extend", async () => {
+  const t = specMergeSetup({ mergeSpecTests: true });
+  await t.init();
+  await t.run("tests");
+  assert.deepEqual(JSON.parse(t.read("spec.json")).tasks.T1.extends, { "tests/test_a_new_spec.py": "tests/test_a.py" });
+  await t.run("build");
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  const tasks = JSON.parse(t.read("tasks.json")).tasks;
+  assert.deepEqual(tasks.at(-1), { ...tasks.at(-1), id: "M1", source: "merge", status: "done" });
+  assert.ok(!fs.existsSync(path.join(t.repo, "tests/test_a_new_spec.py")));
+  assert.equal((fs.readFileSync(path.join(t.repo, "tests/test_a.py"), "utf8").match(/def test_/g) ?? []).length, 3);
+  assert.deepEqual(JSON.parse(t.read("spec.json")).tasks.T1.merged, { "tests/test_a_new_spec.py": "tests/test_a.py" });
+  assert.match(t.read("spec/index.md"), /merged into `tests\/test_a\.py`/);
+  assert.doesNotMatch(t.read("log.md"), /tampering/); // deleting the merged Spec file is expected
+});
+
+test("spec merge: a merge that loses test cases is flagged and not done", async () => {
+  const t = specMergeSetup({ mergeSpecTests: true, maxTaskAttempts: 1 });
+  await t.init();
+  await t.run("tests");
+  process.env.MOCK_BAD_MERGE = "1";
+  await t.run("build");
+  delete process.env.MOCK_BAD_MERGE;
+  assert.match(t.read("log.md"), /merge: tests\/test_a\.py has 2 test cases, expected at least 3 \(2 \+ 1 from test_a_new_spec\.py\)/);
+  assert.equal(JSON.parse(t.read("tasks.json")).tasks.find((x: any) => x.id === "M1").status, "doing");
+  assert.equal(JSON.parse(t.read("spec.json")).tasks.T1.merged, undefined);
+});
+
+test("spec merge: off by default, Spec files stay separate", async () => {
+  const t = specMergeSetup({});
+  await t.init();
+  await t.run("tests");
+  await t.run("build");
+  assert.match(t.posts.at(-1)!, /BUILD COMPLETE/);
+  assert.ok(!JSON.parse(t.read("tasks.json")).tasks.some((x: any) => x.source === "merge"));
+  assert.ok(fs.existsSync(path.join(t.repo, "tests/test_a_new_spec.py")));
+});

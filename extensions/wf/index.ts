@@ -23,7 +23,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { type Flag, changedPaths, diffSummary, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
+import { type Flag, changedPaths, countTestCases, diffSummary, dropCheckpoints, inspectRound, restore, snapshot } from "./checkpoint.ts";
 import {
   type Checkpoint,
   type Config,
@@ -47,6 +47,7 @@ import {
   REVIEWER_SYSTEM,
   SUMMARIZER_SYSTEM,
   TESTER_SYSTEM,
+  mergeTaskDetail,
   managerBrief,
   managerSystem,
   planPrompt,
@@ -61,7 +62,7 @@ import {
 import { HELP_PATH, tip, topic, topics } from "./help.ts";
 import { ROLES, availableModels, contextWindow, findModel, modelLabel, validateModels } from "./models.ts";
 import { extractBlock, extractJson, runFresh, stripFence } from "./runner.ts";
-import { type Spec, misplacedTests, parkedFiles, testRoots, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
+import { type MergePair, type Spec, liveFiles, misplacedTests, parkedFiles, pendingMerges, testRoots, readParked, removeParked, renderIndex, specState, syncSpecFiles, taskHash } from "./spec.ts";
 import { loadAll, loadFeature, renderAll, renderCard } from "./stats.ts";
 import { resolveVerify, runVerify } from "./verify.ts";
 
@@ -333,6 +334,32 @@ export default function wf(pi: ExtensionAPI) {
         return fix;
       };
 
+      // Spec files that extend an existing test file are merged into it by a last task (M1), before review.
+      const mergeOn = cfg.mergeSpecTests && !!liveSpec;
+      const ensureMergeTask = (): Task | undefined => {
+        if (!mergeOn) return;
+        // A merge task marked done without the harness seeing it (e.g. by the manager): its deleted Spec files count as merged.
+        if (tasks.some((t) => t.source === "merge" && t.status === "done"))
+          for (const m of pendingMerges(liveSpec, tasks))
+            if (!fs.existsSync(path.join(ctx.cwd, m.spec))) (liveSpec!.tasks[m.task].merged ??= {})[m.spec] = m.target;
+        const pending = pendingMerges(liveSpec, tasks);
+        if (!pending.length || tasks.some((t) => t.source === "merge" && t.status === "dropped")) return; // nothing to do, or the human said no
+        let m = tasks.find((t) => t.source === "merge" && t.status !== "done");
+        if (!m) {
+          m = {
+            id: `M${tasks.filter((t) => t.source === "merge").length + 1}`,
+            title: "Merge spec tests into their test classes",
+            ...mergeTaskDetail(pending),
+            status: "todo",
+            attempts: 0,
+            source: "merge",
+          };
+          tasks.push(m);
+          led.saveTasks(tasks);
+        }
+        return m;
+      };
+
       /** Accept "done" only with no open tasks, real changes on disk, and a fresh passing verification. */
       const tryFinish = async (round: number): Promise<boolean> => {
         if (firstUnfinished()) return false;
@@ -355,7 +382,8 @@ export default function wf(pi: ExtensionAPI) {
         if (!Array.isArray(proposed) || !proposed.length) return;
         const patches = new Map(proposed.filter((p) => p?.id).map((p) => [String(p.id), p]));
         const apply = (old: Task | undefined, p: Partial<Task>): Task => {
-          const status = (["todo", "doing", "done", "dropped"].includes(p.status as string) ? p.status : old?.status ?? "todo") as Task["status"];
+          let status = (["todo", "doing", "done", "dropped"].includes(p.status as string) ? p.status : old?.status ?? "todo") as Task["status"];
+          if (old?.source === "merge" && status === "dropped") status = old.status; // only the human drops the merge task
           return {
             id: String(p.id),
             title: p.title ?? old?.title ?? String(p.id),
@@ -443,6 +471,7 @@ export default function wf(pi: ExtensionAPI) {
           let next: Task | undefined = dec?.next ? tasks.find((t) => t.id === dec.next) : undefined;
           if (next && (next.status === "done" || next.status === "dropped")) next = undefined;
 
+          if (!next && (dec?.done || !firstUnfinished()) && st.lastVerify?.ok !== false) next = ensureMergeTask();
           if (!next && (dec?.done || !firstUnfinished())) {
             if (await tryFinish(round)) {
               outcome = "done";
@@ -491,9 +520,16 @@ export default function wf(pi: ExtensionAPI) {
           const fpBefore = fingerprint(ctx.cwd);
           const n = st.roundsTotal;
           // Spec tests of this task and of finished tasks are in place for the round, and restored after it.
-          const specIds = liveSpec ? tasks.filter((t) => t.id === next!.id || t.status === "done").map((t) => t.id).filter((id) => liveSpec.tasks[id]?.files.length) : [];
-          const syncSpecs = () => specIds.flatMap((id) => syncSpecFiles(ctx.cwd, id, liveSpec!.tasks[id].files));
+          // A merge round moves Spec files into their targets: stop restoring those, and check the test cases all arrive.
+          const merging: MergePair[] = next.source === "merge" ? pendingMerges(liveSpec, tasks) : [];
+          const mergingSet = new Set(merging.map((m) => m.spec));
+          const specIds = liveSpec
+            ? tasks.filter((t) => t.id === next!.id || t.status === "done").map((t) => t.id).filter((id) => liveSpec.tasks[id] && liveFiles(liveSpec.tasks[id]).length)
+            : [];
+          const syncSpecs = () => specIds.flatMap((id) => syncSpecFiles(ctx.cwd, id, liveFiles(liveSpec!.tasks[id]).filter((f) => !mergingSet.has(f))));
           syncSpecs();
+          const readCases = (rel: string) => (fs.existsSync(path.join(ctx.cwd, rel)) ? countTestCases(fs.readFileSync(path.join(ctx.cwd, rel), "utf8")) : 0);
+          const mergeBase = merging.map((m) => ({ ...m, before: readCases(m.target), incoming: countTestCases(readParked(ctx.cwd, m.task, m.spec)) }));
           const pre = start ? snapshot(ctx.cwd, `wf: before round ${n} (${next.id})`) : undefined;
           let entry: Checkpoint | undefined;
           if (pre) {
@@ -607,7 +643,7 @@ export default function wf(pi: ExtensionAPI) {
           let pauseAfter: Pause | undefined;
           if (pre && post && start) {
             const others = new Set(cps.filter((c) => c.task && c.task !== next!.id).flatMap((c) => c.files ?? []));
-            flags = inspectRound(ctx.cwd, pre, post, start, others);
+            flags = inspectRound(ctx.cwd, pre, post, start, others, mergingSet);
             const lost = flags.find((f) => f.kind === "lost-work");
             if (lost) {
               render(round, "lost work?");
@@ -632,6 +668,12 @@ export default function wf(pi: ExtensionAPI) {
               }
             }
           }
+          const mergeProblems = mergeBase.flatMap((m) => {
+            if (fs.existsSync(path.join(ctx.cwd, m.spec))) return [`${m.spec} still exists`];
+            const after = readCases(m.target);
+            return after < m.before + m.incoming ? [`${m.target} has ${after} test cases, expected at least ${m.before + m.incoming} (${m.before} + ${m.incoming} from ${path.basename(m.spec)})`] : [];
+          });
+          if (mergeProblems.length) flags.push({ kind: "merge", detail: mergeProblems.join("; "), files: merging.map((m) => m.target) });
           const tamper = flags.find((f) => f.kind === "tampering");
           if (tamper) st.tamper = { ...st.tamper, [next.id]: (st.tamper?.[next.id] ?? 0) + 1 };
           flagsThisRun.push(...flags.map((f) => `r${n} ${next!.id} ${f.kind}: ${f.detail}`));
@@ -656,6 +698,11 @@ export default function wf(pi: ExtensionAPI) {
           const roundStats: { files?: number; added?: number; removed?: number } = {};
           // A flagged round can't complete its task, whatever the report says.
           if (report.status === "done" && st.lastVerify?.ok !== false && !flags.length) next.status = "done";
+          if (merging.length && next.status === "done") {
+            for (const m of merging) (liveSpec!.tasks[m.task].merged ??= {})[m.spec] = m.target;
+            led.saveSpec(liveSpec!);
+            led.write("spec/index.md", renderIndex(liveSpec!, tasks));
+          }
           st.lastReport = { ...report, task: next.id, changed: lastRoundChanged };
           if (pre && post && entry) {
             const d = diffSummary(ctx.cwd, pre.commit, post.commit, 20000);
@@ -1034,7 +1081,11 @@ export default function wf(pi: ExtensionAPI) {
       }
       if (res.aborted) return ctx.ui.notify("Stopped. Tests written so far are kept; run /wf:tests again to finish.", "info");
 
-      const out = extractJson<{ tasks?: { id?: string; tests?: string[]; skip?: string | null }[]; assumptions?: string[]; spec_gaps?: string[] }>(res.text, "wf-tests");
+      const out = extractJson<{
+        tasks?: { id?: string; files?: { path?: string; extends?: string | null }[]; tests?: string[]; skip?: string | null }[];
+        assumptions?: string[];
+        spec_gaps?: string[];
+      }>(res.text, "wf-tests");
       for (const t of targets) {
         const reported = out?.tasks?.find((x) => x.id === t.id);
         const oldFiles = new Set(spec.tasks[t.id]?.files ?? []);
@@ -1055,7 +1106,15 @@ export default function wf(pi: ExtensionAPI) {
           problems.push(
             `${t.id}: ${f} is not under a folder where this project keeps tests (${roots.slice(0, 3).join(", ")}${roots.length > 3 ? ", …" : ""}), so the build would never run it. Fix: /${cmd("tests")} ${t.id} put the tests under ${roots[0]}`,
           );
-        if (files.length) spec.tasks[t.id] = { files, tests: (reported?.tests ?? []).filter(Boolean), hash: taskHash(t), at: now() };
+        // Which existing test file each Spec file adds to: merged into it at the end of the build.
+        const ext: Record<string, string> = {};
+        for (const f of reported?.files ?? []) {
+          if (!f?.path || !f.extends || !files.includes(f.path)) continue;
+          if (fs.existsSync(path.join(ctx.cwd, f.extends))) ext[f.path] = f.extends;
+          else problems.push(`${t.id}: ${f.path} extends ${f.extends}, which doesn't exist; it will stay a separate file`);
+        }
+        if (files.length)
+          spec.tasks[t.id] = { files, tests: (reported?.tests ?? []).filter(Boolean), hash: taskHash(t), at: now(), ...(Object.keys(ext).length ? { extends: ext } : {}) };
         else if (reported?.skip) spec.tasks[t.id] = { files: [], tests: [], skip: reported.skip, hash: taskHash(t), at: now() };
         else {
           delete spec.tasks[t.id];

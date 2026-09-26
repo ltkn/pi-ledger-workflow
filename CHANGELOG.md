@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Optional (`"mergeSpecTests": true`, off by default): spec tests merged at the end of the build: the tester records which existing test file each Spec file extends, and once every task is done, a last task (M1) moves those tests into it (following its grouping convention) and deletes the Spec file. The harness checks that no test case was lost before M1 counts as done; review sees the merged result
 - Tester: when the plan changes existing tests, those edits stay with the workers and the acceptance checks go in a new sibling file named after the behaviour it pins (e.g. `OrderRenderTest` → `OrderRenderCompactHeaderSpecTest`), so later features don't collide with earlier Spec files; a dropped copy of an existing file now says why and where the test belongs instead
 - `/wf:tests` tells the tester where the project keeps its tests (e.g. `src/test/java/`, detected from the tracked test files) and warns about any spec test placed outside those folders, which the build would never run
 - Fix: finished features are archived to `.pi/wf-archive/` (which ignores itself in git) instead of `.pi/wf/archive/`, so fresh roles exploring the ledger no longer read old features' plans and spec tests; existing archives are moved automatically. Fresh roles are also told to ignore anything about other features

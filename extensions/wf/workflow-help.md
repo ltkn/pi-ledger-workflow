@@ -65,9 +65,17 @@ acceptance tests for each task, before any code exists.
   it's dropped (you're told). When the plan changes existing tests, the workers
   make those edits, and the tester pins the new behaviour in a sibling file
   named after it, e.g. `OrderRenderCompactHeaderSpecTest.java` next to
-  `OrderRenderTest.java`. After the feature, Spec files are ordinary tests:
-  a later feature that changes that behaviour updates them like any other test,
-  and writes its own, differently named Spec file.
+  `OrderRenderTest.java`.
+- **They can be merged at the end** (off by default: `"mergeSpecTests": true`
+  in `.pi/wf/config.json` turns it on). Once every task is done and the tests pass,
+  one last task (M1) moves each Spec file's tests into the test file it extends
+  and deletes the Spec file, so test files don't pile up. It follows that file's
+  convention: if it already groups its tests (JUnit `@Nested`, `describe`
+  blocks), the moved tests get a group named after the behaviour. The build
+  checks that every test case arrived (the target must end with at least its
+  own plus the Spec file's) before M1 counts as done, and review sees the
+  merged result. Spec tests for something new (no existing test file) simply
+  stay where they are. To skip it for one feature, drop M1 in `tasks.json`.
 - **They go where your tests live.** The tester is told the project's test
   folders (e.g. `src/test/java/`), and `/wf:tests` warns about any file outside
   them: Maven, Gradle or pytest would never run it, and the gate would silently
